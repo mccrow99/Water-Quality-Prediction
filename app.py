@@ -11,12 +11,13 @@ Expected files on the server (set paths in CONFIGURATION below):
                               linear_regression/lr_<target>.pkl
                               random_forest/rf_<target>.pkl
                               gradient_boosting/gb_<target>.pkl
+                              neural_network/nn_<target>.pkl
                             e.g. random_forest/rf_specific_conductance.pkl
 
 Thirteen targets are supported (water temperature, dissolved oxygen, pH,
 nitrate, nitrite, nitrate + nitrite, total phosphorus, specific conductance,
 total dissolved solids, total suspended solids, turbidity, E. coli, and the
-composite WQI), each in three model flavours — 39 pkl files in total.
+composite WQI), each in four model flavours — 52 pkl files in total.
 
 Each .pkl holds a dict: {"pipeline", "target_transform", "log_offset",
 "smearing_factor", "feature_cols"}. The pipeline's feature order must match
@@ -46,7 +47,7 @@ import pandas as pd
 from scipy.interpolate import griddata
 
 import dash
-from dash import dcc, html, Input, Output, State, callback_context, no_update
+from dash import ALL, dcc, html, Input, Output, State, callback_context, no_update
 import plotly.graph_objects as go
 
 warnings.filterwarnings("ignore")
@@ -114,16 +115,20 @@ TARGET_COLS = {
     "WQI":                    "WQI",
 }
 
-# Model type display name → (filename prefix, sub-folder under MODEL_DIR)
+# Model type display name → filename prefix. Iteration order is the display
+# order everywhere — the model dropdown and the comparison table both walk this
+# dict — so it runs simplest to most complex rather than alphabetically.
 MODEL_PREFIXES = {
-    "Gradient Boosting": "gb",
-    "Random Forest":     "rf",
     "Linear Regression": "lr",
+    "Random Forest":     "rf",
+    "Gradient Boosting": "gb",
+    "Neural Network":    "nn",
 }
 MODEL_SUBDIRS = {
-    "Gradient Boosting": "gradient_boosting",
-    "Random Forest":     "random_forest",
     "Linear Regression": "linear_regression",
+    "Random Forest":     "random_forest",
+    "Gradient Boosting": "gradient_boosting",
+    "Neural Network":    "neural_network",
 }
 
 
@@ -173,6 +178,7 @@ MODEL_DESCRIPTIONS = {
     "Gradient Boosting": "Highest-accuracy tree ensemble with stronger seasonal and nonlinear pattern capture.",
     "Random Forest": "Robust ensemble model with richer nonlinear behavior and stable predictions across stations.",
     "Linear Regression": "Fast baseline model with simpler, interpretable behavior.",
+    "Neural Network": "Averaged multilayer perceptrons — smooth nonlinear fits, generally between the linear and tree models.",
 }
 
 TARGET_SHORT_NOTES = {
@@ -630,17 +636,32 @@ def build_feature_matrix(pred_date: date) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────
 # PREDICTION HELPER
 # ─────────────────────────────────────────────────────────────
+@lru_cache(maxsize=256)
+def _cached_station_predictions(target: str, model_type: str, iso_date: str) -> tuple:
+    """
+    Raw-scale predictions for every station, memoised on (target, family, date).
+
+    The cache exists so that redrawing the same prediction — which the
+    interpolation toggle does on every click — costs nothing. Returns a tuple
+    because lru_cache needs a hashable value; the caller re-wraps it.
+    """
+    X   = build_feature_matrix(date.fromisoformat(iso_date))
+    mdl = MODELS[target][model_type]       # already-fitted pipeline from pkl
+
+    raw = mdl.predict(X.to_numpy())        # inference only — no fit() call
+    return tuple(_to_raw_scale(target, model_type, raw).tolist())
+
+
 def predict_at_stations(target: str, model_type: str, pred_date: date) -> pd.DataFrame:
     """
     Run the loaded model for all stations at pred_date.
     Returns STATIONS with an added 'predicted' column.
     """
-    X   = build_feature_matrix(pred_date)
-    mdl = MODELS[target][model_type]       # already-fitted pipeline from pkl
-
-    raw = mdl.predict(X.to_numpy())        # inference only — no fit() call
     result = STATIONS.copy()
-    result["predicted"] = _to_raw_scale(target, model_type, raw)
+    result["predicted"] = np.asarray(
+        _cached_station_predictions(target, model_type, pred_date.isoformat()),
+        dtype=float,
+    )
     return result
 
 
@@ -699,16 +720,48 @@ CARD_STYLE = {
 }
 
 SIDECARD_STYLE = {
-    "padding": "20px 22px",
+    "padding": "18px 20px",
 }
 
 LABEL_STYLE = {
     "fontFamily": FONT,
-    "fontSize": "11px",
-    "fontWeight": "500",
+    "fontSize": "10px",
+    "fontWeight": "700",
+    "letterSpacing": "0.07em",
+    "textTransform": "uppercase",
     "color": TEXT_LIGHT,
     "marginBottom": "8px",
     "display": "block",
+}
+
+
+def _triggered_id():
+    """
+    callback_context.triggered_id, or None when there is no request context.
+
+    The callbacks are called directly by test_app.py, where Dash raises rather
+    than reporting "nothing triggered this".
+    """
+    try:
+        return callback_context.triggered_id
+    except Exception:
+        return None
+
+
+def _panel_heading(text: str, hint: Optional[str] = None) -> html.Div:
+    """Small uppercase heading used at the top of every right-rail panel."""
+    children = [html.Span(text, className="panel-heading-text")]
+    if hint:
+        children.append(html.Span(hint, className="panel-heading-hint"))
+    return html.Div(className="panel-heading", children=children)
+
+# Outer style for the target/model dcc.Dropdowns. The inner control is a
+# React-Select widget, so its border, height and menu are styled in
+# assets/dashboard.css (.Select-*) rather than here.
+DROPDOWN_STYLE = {
+    "fontFamily": FONT,
+    "fontSize": "13px",
+    "color": TEXT_DARK,
 }
 
 DIVIDER_STYLE = {
@@ -742,7 +795,9 @@ _NEIGHBOR_LABELS = [
 ]
 _IOWA_LABEL = ("IOWA", 42.1, -93.5)
 
-# Major Iowa city markers for map reference
+# Major Iowa city markers for map reference. Plotly's `scope="usa"` basemap
+# draws no place names at all, so without these the map is an outline: a user
+# looking at a dot has no way to say where in Iowa it is.
 _IOWA_CITY_MARKERS = [
     ("Des Moines",      41.5868, -93.6250),
     ("Cedar Rapids",    41.9779, -91.6656),
@@ -758,30 +813,126 @@ _IOWA_CITY_MARKERS = [
     ("Ottumwa",         41.0200, -92.4113),
 ]
 
+# River name labels, hand-placed on a point the named river actually runs
+# through — Natural Earth (which is what `showrivers` draws) carries the
+# geometry but no labels, and Plotly cannot label it for us.
+#
+# Each position is anchored between two known river towns: e.g. the Mississippi
+# label sits between Clinton (41.84, -90.19) and Dubuque (42.50, -90.66), the
+# Missouri label between Sioux City (42.50, -96.40) and Council Bluffs
+# (41.26, -95.86). These are labels of convenience, not surveyed placements.
+_IOWA_RIVER_LABELS = [
+    ("Mississippi R.", 42.15, -90.38),
+    ("Missouri R.",    41.90, -96.13),
+    ("Des Moines R.",  42.22, -93.98),
+    ("Cedar R.",       42.25, -92.03),
+    ("Iowa R.",        41.76, -91.85),
+    ("Big Sioux R.",   43.20, -96.53),
+]
 
-def _add_map_labels(fig: go.Figure) -> None:
-    """Add Iowa label and neighbor state labels only — no city clutter."""
-    fig.add_trace(go.Scattergeo(
-        lat=[_IOWA_LABEL[1]],
-        lon=[_IOWA_LABEL[2]],
-        mode="text",
-        text=[_IOWA_LABEL[0]],
-        textfont=dict(size=14, color=ACCENT, family=FONT),
-        showlegend=False,
-        hoverinfo="skip",
-    ))
+# Named lakes and reservoirs, largest/most recognisable first. The bigger ones
+# also render as polygons from `showlakes`; these supply the names.
+_IOWA_LAKE_LABELS = [
+    ("Iowa Great Lakes", 43.42, -95.14),
+    # Nudged onto the water west of the town of Clear Lake, which also keeps
+    # the label clear of Mason City's.
+    ("Clear Lake",       43.13, -93.47),
+    ("Storm Lake",       42.63, -95.20),
+    # Saylorville and Coralville reservoirs are deliberately absent: both sit
+    # close enough to Des Moines and Iowa City that their labels collide with
+    # the city they are next to, and the city is the better landmark.
+    ("Lake Red Rock",    41.38, -92.98),
+    ("Rathbun Lake",     40.86, -92.88),
+]
+
+
+# A white halo, so a label stays readable where it lands on top of a dense
+# cluster of station dots. `textfont.shadow` takes a CSS text-shadow value and
+# needs plotly >= 5.23 / plotly.js >= 2.35; this repo is on 6.7.0.
+_LABEL_HALO = ("1px 1px 2px #ffffff, -1px -1px 2px #ffffff, "
+               "1px -1px 2px #ffffff, -1px 1px 2px #ffffff")
+
+
+def _add_map_labels(fig: go.Figure, show_landmarks: bool = True) -> None:
+    """
+    Add the state labels, and — when `show_landmarks` — city, river and lake
+    reference labels.
+
+    Every trace added here is `hoverinfo="skip"` and `showlegend=False`, so
+    landmarks can never capture a hover meant for a station or shift the
+    legend. They are appended after the data traces so their text renders on
+    top and stays legible.
+    """
+    # The big centred "IOWA" watermark sits at (42.1, -93.5), which is all but
+    # on top of Ames — so it is only drawn when the city labels are not. With
+    # landmarks on, the named cities identify the state far better anyway.
+    if not show_landmarks:
+        fig.add_trace(go.Scattergeo(
+            lat=[_IOWA_LABEL[1]],
+            lon=[_IOWA_LABEL[2]],
+            mode="text",
+            text=[_IOWA_LABEL[0]],
+            textfont=dict(size=14, color=ACCENT, family=FONT, shadow=_LABEL_HALO),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
     fig.add_trace(go.Scattergeo(
         lat=[r[1] for r in _NEIGHBOR_LABELS],
         lon=[r[2] for r in _NEIGHBOR_LABELS],
         mode="text",
         text=[r[0] for r in _NEIGHBOR_LABELS],
-        textfont=dict(size=9, color="#9fb8cc", family=FONT),
+        textfont=dict(size=9, color="#9fb8cc", family=FONT, shadow=_LABEL_HALO),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
+
+    if not show_landmarks:
+        return
+
+    # Rivers — italic-blue text sitting on the drawn river lines.
+    fig.add_trace(go.Scattergeo(
+        lat=[r[1] for r in _IOWA_RIVER_LABELS],
+        lon=[r[2] for r in _IOWA_RIVER_LABELS],
+        mode="text",
+        text=[r[0] for r in _IOWA_RIVER_LABELS],
+        textfont=dict(size=8.5, color="#2d6d94", family=FONT, style="italic",
+                      shadow=_LABEL_HALO),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
+
+    # Lakes — a small filled dot plus its name.
+    fig.add_trace(go.Scattergeo(
+        lat=[r[1] for r in _IOWA_LAKE_LABELS],
+        lon=[r[2] for r in _IOWA_LAKE_LABELS],
+        mode="markers+text",
+        text=[r[0] for r in _IOWA_LAKE_LABELS],
+        textposition="bottom center",
+        textfont=dict(size=8.5, color="#2d6d94", family=FONT, shadow=_LABEL_HALO),
+        marker=dict(size=5, color="#6aa5cc", symbol="circle",
+                    line=dict(color="white", width=0.8)),
+        showlegend=False,
+        hoverinfo="skip",
+    ))
+
+    # Cities — a dark square, deliberately a different shape from the circular
+    # station markers so the two are never confused.
+    fig.add_trace(go.Scattergeo(
+        lat=[c[1] for c in _IOWA_CITY_MARKERS],
+        lon=[c[2] for c in _IOWA_CITY_MARKERS],
+        mode="markers+text",
+        text=[c[0] for c in _IOWA_CITY_MARKERS],
+        textposition="top center",
+        textfont=dict(size=9.5, color="#1d2b3a", family=FONT, weight=600,
+                      shadow=_LABEL_HALO),
+        marker=dict(size=5.5, color="#33465c", symbol="square",
+                    line=dict(color="white", width=0.9)),
         showlegend=False,
         hoverinfo="skip",
     ))
 
 
-def empty_map_figure() -> go.Figure:
+def empty_map_figure(show_landmarks: bool = True) -> go.Figure:
     """Base map with station dots — shown before first prediction."""
     fig = go.Figure()
     fig.add_trace(go.Scattergeo(
@@ -806,7 +957,7 @@ def empty_map_figure() -> go.Figure:
             "Coordinates: %{lat:.4f}°N, %{lon:.4f}°W<extra></extra>"
         ),
     ))
-    _add_map_labels(fig)
+    _add_map_labels(fig, show_landmarks)
     _apply_geo_layout(fig)
     return fig
 
@@ -817,9 +968,15 @@ def _apply_geo_layout(fig: go.Figure, height: int = 560) -> None:
         geo=dict(
             scope="usa",
             projection_type="albers usa",
+            # 1:50m Natural Earth rather than the 1:110m default. At one
+            # state's extent the coarse set reduces Iowa's rivers to a couple
+            # of stubs; 50m resolves the Mississippi, Missouri, Des Moines,
+            # Cedar and Iowa rivers and the larger lakes. It is the finest
+            # Plotly offers for geo traces.
+            resolution=50,
             showland=True,    landcolor="#e8edf5",
-            showlakes=True,   lakecolor="#c2d8ee",
-            showrivers=True,  rivercolor="#9ec4df",
+            showlakes=True,   lakecolor="#bcd6ee",
+            showrivers=True,  rivercolor="#8bb8d8", riverwidth=1.1,
             showcoastlines=True, coastlinecolor="#7a9ab5",
             showsubunits=True,   subunitcolor="#8bafc8",
             subunitwidth=1.5,
@@ -843,22 +1000,31 @@ def _apply_geo_layout(fig: go.Figure, height: int = 560) -> None:
     )
 
 
-def _stat_tile(label: str, value: str) -> html.Div:
+def _stat_tile(label: str, value: str, unit: str = "") -> html.Div:
     return html.Div(
-        style={"textAlign": "center", "padding": "4px 0"},
+        className="stat-tile",
         children=[
-            html.Div(value, style={"fontSize": "17px", "fontWeight": "700", "color": TEXT_DARK, "marginBottom": "3px"}),
-            html.Div(label, style={"fontSize": "10px", "color": TEXT_LIGHT, "fontWeight": "500"}),
+            html.Div(
+                className="stat-tile-value",
+                children=[
+                    html.Span(value),
+                    html.Span(unit, className="stat-tile-unit") if unit else None,
+                ],
+            ),
+            html.Div(label, className="stat-tile-label"),
         ],
     )
 
 
-def _info_row(label: str, value: str, value_color: str = TEXT_DARK) -> html.Div:
+def _info_row(label: str, value: str, value_color: str = TEXT_DARK,
+              hint: Optional[str] = None) -> html.Div:
+    """One label/value line. `hint` becomes the native tooltip on hover."""
     return html.Div(
-        style={"display": "flex", "justifyContent": "space-between", "gap": "8px", "padding": "4px 0"},
+        className="info-row",
+        title=hint,
         children=[
-            html.Span(label, style={"fontSize": "12px", "color": TEXT_LIGHT}),
-            html.Span(value, style={"fontSize": "12px", "color": value_color, "fontWeight": "500", "textAlign": "right"}),
+            html.Span(label, className="info-row-label"),
+            html.Span(value, className="info-row-value", style={"color": value_color}),
         ],
     )
 
@@ -867,6 +1033,32 @@ def _fmt_metric(value: Optional[Union[float, int]], suffix: str = "", digits: in
     if value is None or pd.isna(value):
         return "N/A"
     return f"{value:.{digits}f}{suffix}"
+
+
+def _fmt_num(value: Optional[Union[float, int]]) -> str:
+    """
+    Format an error metric with a magnitude-appropriate number of decimals, so
+    a 0.471 mg/L phosphorus RMSE and a 9,763 MPN/100mL E. coli RMSE both read
+    cleanly in the same column.
+    """
+    if value is None or pd.isna(value):
+        return "—"
+    value = float(value)
+    magnitude = abs(value)
+    if magnitude >= 1000:
+        return f"{value:,.0f}"
+    if magnitude >= 100:
+        return f"{value:.1f}"
+    if magnitude >= 10:
+        return f"{value:.2f}"
+    return f"{value:.3f}"
+
+
+def _fmt_signed(value: Optional[Union[float, int]], digits: int = 3) -> str:
+    if value is None or pd.isna(value):
+        return "—"
+    value = float(value)
+    return f"{'+' if value >= 0 else '−'}{abs(value):.{digits}f}"
 
 
 def _get_metric_row(target: Optional[str], model_type: Optional[str]) -> Optional[pd.Series]:
@@ -889,7 +1081,11 @@ def _performance_panel(target: Optional[str], model_type: Optional[str]) -> html
         return html.Div(
             style=SIDECARD_STYLE,
             children=[
-                html.Div("How accurate is it?", style={"fontSize": "12px", "color": TEXT_LIGHT}),
+                _panel_heading("Model accuracy"),
+                html.Div(
+                    "Pick a measurement and model to see how it scored on held-out stations.",
+                    className="panel-empty",
+                ),
             ],
         )
 
@@ -899,8 +1095,10 @@ def _performance_panel(target: Optional[str], model_type: Optional[str]) -> html
     unit       = TARGET_UNITS.get(target, "")
 
     rows = [
-        html.Div("How accurate is it?", style={"fontSize": "11px", "color": TEXT_LIGHT, "marginBottom": "12px"}),
-        _info_row("Model score (R²)", _fmt_metric(r2_val)),
+        _panel_heading("Model accuracy", f"{model_type}"),
+        _info_row("Model score (R²)", _fmt_metric(r2_val),
+                  hint="Share of held-out variance explained. 1.0 is perfect, 0.0 matches "
+                       "predicting the mean, and negative is worse than the mean."),
     ]
 
     # For a log-fitted target the raw-scale R² above is dominated by the same
@@ -910,11 +1108,24 @@ def _performance_panel(target: Optional[str], model_type: Optional[str]) -> html
     r2_log = metric_row.get("r2_log")
     is_log_fitted = r2_log is not None and not pd.isna(r2_log)
     if is_log_fitted:
-        rows.append(_info_row("Model score (R², log scale)", _fmt_metric(float(r2_log))))
+        rows.append(_info_row(
+            "Model score (R², log scale)", _fmt_metric(float(r2_log)),
+            hint="This model was fitted on log10(y + c); this is the score on the "
+                 "scale it was actually fitted and should be read on.",
+        ))
 
-    rows.append(_info_row("Avg error (RMSE)", f"{rmse:.2f} {unit}"))
+    rows.append(_info_row("Avg error (RMSE)", f"{_fmt_num(rmse)} {unit}",
+                          hint="Root mean squared error, in the target's own units."))
+    mae = metric_row.get("mae")
+    if mae is not None and not pd.isna(mae):
+        rows.append(_info_row("Median-ish error (MAE)", f"{_fmt_num(float(mae))} {unit}",
+                              hint="Mean absolute error, in the target's own units."))
     if error_rate is not None and not pd.isna(error_rate):
-        rows.append(_info_row("Typical error rate", f"{float(error_rate):.0f}%"))
+        rows.append(_info_row(
+            "Typical error rate", f"{float(error_rate):.0f}%",
+            hint="sMAPE. It tracks a target's zero fraction more than model quality — "
+                 "prefer MAE/RMSE on the zero-inflated targets.",
+        ))
 
     # The memorization bar: "repeat this station's previous value" scored on the
     # same held-out rows. A model that does not clear it is recalling the site
@@ -932,14 +1143,19 @@ def _performance_panel(target: Optional[str], model_type: Optional[str]) -> html
         persistence = metric_row.get("persistence_r2")
         margin      = metric_row.get("model_minus_persistence")
         baseline_label = "Repeat-last-value baseline (R²)"
+    baseline_hint = ("\"This station's next value equals its previous value\" — a model with "
+                     "no features at all, scored on the same held-out rows. It is the "
+                     "memorization bar the model has to clear.")
     if persistence is not None and not pd.isna(persistence):
-        rows.append(_info_row(baseline_label, _fmt_metric(float(persistence))))
+        rows.append(_info_row(baseline_label, _fmt_metric(float(persistence)),
+                              hint=baseline_hint))
     if margin is not None and not pd.isna(margin):
         margin = float(margin)
         rows.append(_info_row(
             "Beats the baseline by",
-            f"{'+' if margin >= 0 else '−'}{abs(margin):.3f} R²",
+            f"{_fmt_signed(margin)} R²",
             SUCCESS if margin >= 0 else DANGER,
+            hint=baseline_hint,
         ))
 
     stations = metric_row.get("test_stations")
@@ -950,10 +1166,7 @@ def _performance_panel(target: Optional[str], model_type: Optional[str]) -> html
             note += (" This target is right-skewed enough that this model is fitted on "
                      "log10 — read the log-scale score; the raw-scale one is set by "
                      "a handful of extreme readings.")
-        rows.append(html.Div(
-            note,
-            style={"fontSize": "10px", "color": TEXT_LIGHT, "lineHeight": "1.5", "marginTop": "10px"},
-        ))
+        rows.append(html.Div(note, className="panel-footnote"))
 
     return html.Div(style=SIDECARD_STYLE, children=rows)
 
@@ -962,9 +1175,11 @@ def _hover_panel_default() -> html.Div:
     return html.Div(
         style=SIDECARD_STYLE,
         children=[
+            _panel_heading("Point detail"),
             html.Div(
-                "Hover a station on the map",
-                style={"fontSize": "13px", "color": TEXT_LIGHT, "lineHeight": "1.6"},
+                "Hover any station on the map to see its predicted value, "
+                "interpretation and source metadata.",
+                className="panel-empty",
             ),
         ],
     )
@@ -974,10 +1189,9 @@ def _summary_panel_default() -> html.Div:
     return html.Div(
         style=SIDECARD_STYLE,
         children=[
-            html.Div(
-                "Run a prediction to see stats",
-                style={"fontSize": "12px", "color": TEXT_LIGHT, "lineHeight": "1.6"},
-            ),
+            _panel_heading("Statewide spread"),
+            html.Div("Run a prediction to see the low / average / high across all "
+                     "monitoring stations.", className="panel-empty"),
         ],
     )
 
@@ -986,10 +1200,10 @@ def _streak_panel_default() -> html.Div:
     return html.Div(
         style=SIDECARD_STYLE,
         children=[
-            html.Div("Streak view", style={"fontSize": "12px", "color": TEXT_DARK, "fontWeight": "600", "marginBottom": "6px"}),
+            _panel_heading("Recent trend"),
             html.Div(
-                "Run a prediction to unlock the recent-pattern heatmap.",
-                style={"fontSize": "12px", "color": TEXT_LIGHT, "lineHeight": "1.6"},
+                f"Run a prediction to unlock the {STREAK_WEEKS}-week statewide-average heatmap.",
+                className="panel-empty",
             ),
         ],
     )
@@ -997,7 +1211,7 @@ def _streak_panel_default() -> html.Div:
 
 def _available_targets() -> list:
     """
-    Return radio options for all targets.
+    Return dropdown options for all targets.
     Disabled if no pkl was found for that target.
     """
     options = []
@@ -1115,37 +1329,41 @@ def _streak_panel(target: str, model_type: str, pred_date: date) -> html.Div:
     return html.Div(
         style=SIDECARD_STYLE,
         children=[
+            _panel_heading("Recent trend", "statewide avg"),
             html.Div(
-                style={"display": "flex", "justifyContent": "space-between", "alignItems": "flex-start", "gap": "12px", "marginBottom": "14px"},
+                style={"display": "flex", "justifyContent": "space-between", "alignItems": "flex-start", "gap": "12px", "marginBottom": "12px"},
                 children=[
                     html.Div(
                         children=[
-                            html.Div("Streak view", style={"fontSize": "11px", "color": TEXT_LIGHT, "marginBottom": "8px"}),
                             html.Div(
                                 style={"display": "flex", "alignItems": "baseline", "gap": "6px"},
                                 children=[
-                                    html.Span(f"{current_value:.1f}" if current_value is not None else "—", style={"fontSize": "28px", "fontWeight": "700", "color": TEXT_DARK, "lineHeight": "1"}),
+                                    html.Span(f"{current_value:.1f}" if current_value is not None else "—", style={"fontSize": "30px", "fontWeight": "700", "color": TEXT_DARK, "lineHeight": "1", "letterSpacing": "-0.02em"}),
                                     html.Span(unit, style={"fontSize": "13px", "color": TEXT_LIGHT}),
                                 ],
                             ),
                             html.Div(
                                 current_assessment["label"],
-                                style={"fontSize": "11px", "fontWeight": "700", "color": current_assessment["color"], "marginTop": "8px"},
+                                className="assessment-pill",
+                                style={"borderColor": current_assessment["color"], "color": current_assessment["color"], "marginTop": "9px"},
                             ),
                         ],
                     ),
                     html.Div(
-                        style={"minWidth": "96px"},
+                        style={"minWidth": "104px"},
                         children=[
                             _info_row(f"{STREAK_WEEKS}-wk avg", _fmt_metric(window_mean, f" {unit}", digits=1)),
                             _info_row("Peak", _fmt_metric(peak_value, f" {unit}", digits=1)),
+                            _info_row("Low", _fmt_metric(window_low if values else None, f" {unit}", digits=1)),
                         ],
                     ),
                 ],
             ),
             html.Div(
-                f"{STREAK_WEEKS} weeks of statewide average predictions ending {pred_date.strftime('%b %d, %Y')}",
-                style={"fontSize": "11px", "color": TEXT_LIGHT, "lineHeight": "1.5", "marginBottom": "12px"},
+                f"{STREAK_WEEKS} weeks of statewide average predictions ending "
+                f"{pred_date.strftime('%b %d, %Y')}. Shading is scaled within this window only.",
+                className="panel-footnote",
+                style={"marginTop": "0", "marginBottom": "12px"},
             ),
             html.Div(className="streak-months", children=[
                 html.Div(className="streak-month-spacer"),
@@ -1183,6 +1401,283 @@ def _streak_panel(target: str, model_type: str, pred_date: date) -> html.Div:
 
 
 # ─────────────────────────────────────────────────────────────
+# CROSS-MODEL COMPARISON TABLE
+#
+# The same view as src/05_modeling/model_metrics.png, rendered live from
+# model_metrics.csv: every target × every family, side by side, so a user can
+# pick a model on evidence instead of by trying all four.
+#
+# Two presentation rules carried over from that figure:
+#   • a log-fitted (target, family) is shown on the LOG scale — r2_log and
+#     model_minus_persistence_log — flagged with †, because the raw-scale R² of
+#     a log fit is set by a handful of extreme readings.
+#   • RMSE / MAE / error rate are always in the target's own units, for all 52
+#     models, so the thirteen targets stay comparable down a column.
+# ─────────────────────────────────────────────────────────────
+COMPARISON_COLUMNS = [
+    ("Measurement", "cmp-col-target",
+     "The water-quality variable being predicted."),
+    ("Model",       "cmp-col-model",
+     "Model family. Click any row to load that target/model pair into the controls above."),
+    ("R²",          "cmp-col-r2",
+     "Held-out R² — 1.0 perfect, 0.0 no better than the mean, negative worse. "
+     "† rows are on the log scale."),
+    ("RMSE",        "cmp-col-num",
+     "Root mean squared error, in the target's own units."),
+    ("MAE",         "cmp-col-num",
+     "Mean absolute error, in the target's own units."),
+    ("Error rate",  "cmp-col-num",
+     "sMAPE (%). Tracks a target's zero fraction more than model quality — "
+     "prefer MAE/RMSE on the zero-inflated targets."),
+    ("vs. baseline","cmp-col-num",
+     "R² minus the persistence baseline ('this station's next value equals its "
+     "previous value'). Negative means the model does not beat repeating the last reading."),
+    ("Test sites",  "cmp-col-num",
+     "Monitoring stations held out whole from training and scored on."),
+]
+
+
+def _display_r2(row: pd.Series) -> Tuple[Optional[float], bool]:
+    """
+    Return (R² to display, was_log_fitted).
+
+    For a log-fitted model the log-scale score is the honest one, so that is
+    what the table shows — flagged, because it is not on the same scale as the
+    raw-fit rows beside it.
+    """
+    r2_log = row.get("r2_log")
+    if r2_log is not None and not pd.isna(r2_log):
+        return float(r2_log), True
+    r2 = row.get("r2")
+    return (None if r2 is None or pd.isna(r2) else float(r2)), False
+
+
+def _display_margin(row: pd.Series, is_log: bool) -> Optional[float]:
+    key = "model_minus_persistence_log" if is_log else "model_minus_persistence"
+    value = row.get(key)
+    return None if value is None or pd.isna(value) else float(value)
+
+
+def _r2_bar(value: Optional[float]) -> html.Div:
+    """
+    Numeric R² plus a proportional bar — the fast visual scan down a target's
+    four rows. Length and shade both encode the score, so the ordering reads at
+    a glance even where the four families are close together.
+    """
+    if value is None:
+        return html.Div("—", className="cmp-r2-empty")
+
+    fraction = max(0.0, min(1.0, value))
+    # Blend #cfe0fb → #1d4ed8 so darker always means better.
+    low, high = (207, 224, 251), (29, 78, 216)
+    fill = tuple(int(low[i] + (high[i] - low[i]) * fraction) for i in range(3))
+    return html.Div(
+        className="cmp-r2",
+        children=[
+            html.Span(
+                f"{value:.3f}",
+                className="cmp-r2-value",
+                style={"color": DANGER if value < 0 else TEXT_DARK},
+            ),
+            html.Div(
+                className="cmp-r2-track",
+                children=html.Div(
+                    className="cmp-r2-fill",
+                    style={
+                        "width": f"{max(fraction * 100.0, 1.5):.1f}%",
+                        "background": f"rgb{fill}",
+                    },
+                ),
+            ),
+        ],
+    )
+
+
+def _best_model_for(target: str) -> Optional[str]:
+    """Family with the highest displayed R² for a target, or None."""
+    if MODEL_METRICS.empty:
+        return None
+    rows = MODEL_METRICS[MODEL_METRICS["target"] == target]
+    scored = {}
+    for _, row in rows.iterrows():
+        value, _ = _display_r2(row)
+        if value is not None and row["model"] in MODEL_PREFIXES:
+            scored[row["model"]] = value
+    return max(scored, key=scored.get) if scored else None
+
+
+def _comparison_table(selected_target: Optional[str] = None,
+                      selected_model: Optional[str] = None,
+                      scope: str = "all") -> html.Div:
+    """
+    Build the full target × family metrics table.
+
+    `scope` is "all" or "selected" (only the currently chosen measurement).
+    The currently selected pair is highlighted, and every row is clickable —
+    clicking loads that pair into the dropdowns above.
+    """
+    if MODEL_METRICS.empty:
+        return html.Div(
+            "src/05_modeling/model_metrics.csv was not found, so the cross-model "
+            "comparison is unavailable. Predictions are unaffected — the app reads "
+            "everything it needs for inference out of the .pkl files.",
+            className="cmp-unavailable",
+        )
+
+    present = set(MODEL_METRICS["target"])
+    targets = [t for t in TARGET_COLS if t in present]
+    if scope == "selected" and selected_target in targets:
+        targets = [selected_target]
+
+    body_rows = []
+    for group_index, target in enumerate(targets):
+        subset = MODEL_METRICS[MODEL_METRICS["target"] == target]
+        by_model = {
+            row["model"]: row
+            for _, row in subset.iterrows()
+            if row["model"] in MODEL_PREFIXES
+        }
+        best = _best_model_for(target)
+        unit = TARGET_UNITS.get(target, "")
+
+        family_rows = [m for m in MODEL_PREFIXES if m in by_model]
+        for row_index, model_type in enumerate(family_rows):
+            row = by_model[model_type]
+            r2_value, is_log = _display_r2(row)
+            margin = _display_margin(row, is_log)
+            is_selected = (target == selected_target and model_type == selected_model)
+            is_loaded = bool(MODELS.get(target, {}).get(model_type))
+
+            classes = ["cmp-row", "cmp-group-a" if group_index % 2 == 0 else "cmp-group-b"]
+            if row_index == 0:
+                classes.append("cmp-group-start")
+            if is_selected:
+                classes.append("cmp-selected")
+            if not is_loaded:
+                classes.append("cmp-unloaded")
+
+            body_rows.append(html.Tr(
+                id={"type": "cmp-row", "target": target, "model": model_type},
+                n_clicks=0,
+                className=" ".join(classes),
+                title=(f"Load {target} / {model_type}"
+                       if is_loaded else
+                       f"{target} / {model_type} — model file not loaded"),
+                children=[
+                    html.Td(
+                        className="cmp-col-target",
+                        children=[
+                            html.Div(target, className="cmp-target-name"),
+                            html.Div(unit, className="cmp-target-unit"),
+                        ] if row_index == 0 else "",
+                    ),
+                    html.Td(
+                        className="cmp-col-model",
+                        children=[
+                            html.Span("●", className="cmp-best-dot",
+                                      title="Best R² for this measurement")
+                            if model_type == best else
+                            html.Span("", className="cmp-best-dot-spacer"),
+                            html.Span(model_type),
+                            html.Span(" †", className="cmp-flag",
+                                      title="Fitted on log10(y + c); R² and margin are on the log scale.")
+                            if is_log else None,
+                            html.Span(" (not loaded)", className="cmp-missing")
+                            if not is_loaded else None,
+                        ],
+                    ),
+                    html.Td(_r2_bar(r2_value), className="cmp-col-r2"),
+                    html.Td(_fmt_num(row.get("rmse")), className="cmp-col-num"),
+                    html.Td(_fmt_num(row.get("mae")), className="cmp-col-num"),
+                    html.Td(
+                        "—" if pd.isna(row.get("error_rate")) else f"{float(row['error_rate']):.1f}",
+                        className="cmp-col-num",
+                    ),
+                    html.Td(
+                        _fmt_signed(margin) + ("†" if is_log and margin is not None else ""),
+                        className="cmp-col-num",
+                        style={"color": TEXT_LIGHT if margin is None
+                               else (SUCCESS if margin >= 0 else DANGER)},
+                    ),
+                    html.Td(
+                        "—" if pd.isna(row.get("test_stations")) else f"{int(row['test_stations']):,}",
+                        className="cmp-col-num",
+                    ),
+                ],
+            ))
+
+    return html.Div(
+        className="cmp-scroll",
+        children=html.Table(
+            className="cmp-table",
+            children=[
+                html.Thead(html.Tr([
+                    html.Th(label, className=css_class, title=hint)
+                    for label, css_class, hint in COMPARISON_COLUMNS
+                ])),
+                html.Tbody(body_rows),
+            ],
+        ),
+    )
+
+
+def _comparison_summary(target: Optional[str], model_type: Optional[str]) -> html.Div:
+    """One-line 'here is the best model for what you picked' readout."""
+    if not target or MODEL_METRICS.empty:
+        return html.Div(
+            "Pick a measurement above and this line will name its best-scoring model.",
+            className="cmp-summary cmp-summary-idle",
+        )
+
+    best = _best_model_for(target)
+    if best is None:
+        return html.Div(f"No scores recorded for {target}.", className="cmp-summary cmp-summary-idle")
+
+    best_row = _get_metric_row(target, best)
+    best_r2, best_log = _display_r2(best_row)
+    suffix = " (log scale)" if best_log else ""
+
+    if model_type == best:
+        verdict = html.Span(
+            [html.B(model_type), " is the best-scoring model for ", html.B(target),
+             f" — R² {best_r2:.3f}{suffix}."],
+        )
+        tone = "cmp-summary-good"
+    else:
+        current_row = _get_metric_row(target, model_type)
+        current_r2, current_log = _display_r2(current_row) if current_row is not None else (None, False)
+        if current_r2 is None:
+            verdict = html.Span([html.B(best), " scores highest for ", html.B(target),
+                                 f" — R² {best_r2:.3f}{suffix}."])
+        else:
+            verdict = html.Span([
+                html.B(best), " scores highest for ", html.B(target),
+                f" — R² {best_r2:.3f}{suffix}, versus {current_r2:.3f}"
+                f"{' (log scale)' if current_log else ''} for the selected {model_type}.",
+            ])
+        tone = "cmp-summary-note"
+
+    return html.Div(className=f"cmp-summary {tone}", children=[verdict])
+
+
+COMPARISON_FOOTNOTES = [
+    "† Fitted on log10(y + c). The R² and margin shown for those rows are on the log scale "
+    "(r2_log / model_minus_persistence_log) — the like-for-like comparison for those fits, "
+    "and not on the same scale as the untransformed rows beside them.",
+    "RMSE, MAE and error rate are always in the target's own units, so the thirteen "
+    "measurements stay comparable down a column.",
+    "Every score is on stations held out whole from training (GroupShuffleSplit on "
+    "MonitoringLocationIdentifier, 20% of stations), so it answers \"how well does this "
+    "predict at a site the model has never seen?\"",
+    "vs. baseline compares against persistence — \"this station's next value equals its "
+    "previous value\", scored on the same paired rows. A negative margin means the model "
+    "does not beat simply repeating the last reading.",
+    "Error rate is sMAPE; it floors near 168% for Nitrite's 84% zeros. It reflects a "
+    "target's zero fraction more than model quality.",
+]
+
+
+# ─────────────────────────────────────────────────────────────
 # APP LAYOUT
 # ─────────────────────────────────────────────────────────────
 app = dash.Dash(
@@ -1209,20 +1704,44 @@ app.layout = html.Div(
     style={"fontFamily": FONT, "backgroundColor": BG_PAGE, "minHeight": "100vh"},
     children=[
 
+        dcc.Store(id="interp-store", data=False),
+        dcc.Store(id="landmark-store", data=True),
+
         # ── Header ─────────────────────────────────────
         html.Div(
-            style={
-                "background": BG_WHITE,
-                "borderTop": f"3px solid {ACCENT}",
-                "borderBottom": f"1px solid {BORDER}",
-                "padding": "16px 32px",
-                "marginBottom": "24px",
-                "textAlign": "center",
-            },
+            className="app-header",
             children=[
                 html.Div(
-                    "Iowa Water Quality Predictor",
-                    style={"fontSize": "22px", "fontWeight": "700", "color": TEXT_DARK, "letterSpacing": "-0.01em"},
+                    className="app-header-inner",
+                    children=[
+                        html.Div(
+                            children=[
+                                html.H1("Iowa Water Quality Predictor", className="app-title"),
+                                html.Div(
+                                    "Predicted water-quality conditions at every EPA monitoring "
+                                    "station in Iowa, for any date you choose.",
+                                    className="app-subtitle",
+                                ),
+                            ],
+                        ),
+                        html.Div(
+                            className="header-chips",
+                            children=[
+                                html.Div(className="header-chip", children=[
+                                    html.Span(f"{len(STATIONS):,}", className="header-chip-value"),
+                                    html.Span("stations", className="header-chip-label"),
+                                ]),
+                                html.Div(className="header-chip", children=[
+                                    html.Span(f"{len(TARGET_COLS)}", className="header-chip-value"),
+                                    html.Span("measurements", className="header-chip-label"),
+                                ]),
+                                html.Div(className="header-chip", children=[
+                                    html.Span(f"{_n_loaded}", className="header-chip-value"),
+                                    html.Span("models loaded", className="header-chip-label"),
+                                ]),
+                            ],
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -1243,94 +1762,125 @@ app.layout = html.Div(
                             style={"display": "grid", "gap": "18px"},
                             children=[
 
-                            html.Div(style={**CARD_STYLE, "display": "flex", "flexDirection": "column", "gap": "20px"}, children=[
+                            html.Div(style={**CARD_STYLE, "display": "flex", "flexDirection": "column", "gap": "18px"}, children=[
 
                                 # Target variable
                                 html.Div(children=[
-                                    html.Span("What to measure", style=LABEL_STYLE),
-                                    dcc.RadioItems(
-                                        id="target-radio",
+                                    html.Span("1 · What to measure", style=LABEL_STYLE),
+                                    dcc.Dropdown(
+                                        id="target-dropdown",
                                         options=_available_targets(),
                                         value=None,
-                                        labelStyle={
-                                            "display": "flex", "alignItems": "center",
-                                            "gap": "8px", "marginBottom": "6px",
-                                            "fontSize": "13px", "color": TEXT_DARK,
-                                            "cursor": "pointer",
-                                        },
-                                        inputStyle={"accentColor": ACCENT, "width": "14px", "height": "14px"},
+                                        placeholder="Pick a measurement…",
+                                        clearable=False,
+                                        searchable=False,
+                                        style=DROPDOWN_STYLE,
                                     ),
+                                    html.Div(id="target-helper", className="control-helper"),
                                 ]),
+
+                                html.Div(className="control-divider"),
 
                                 # Model type
                                 html.Div(children=[
-                                    html.Span("Which model", style=LABEL_STYLE),
-                                    dcc.RadioItems(
-                                        id="model-radio",
+                                    html.Span("2 · Which model", style=LABEL_STYLE),
+                                    dcc.Dropdown(
+                                        id="model-dropdown",
                                         options=_available_model_types(None),
                                         value="Gradient Boosting",
-                                        labelStyle={
-                                            "display": "flex", "alignItems": "center",
-                                            "gap": "8px", "marginBottom": "6px",
-                                            "fontSize": "13px", "color": TEXT_DARK,
-                                            "cursor": "pointer",
-                                        },
-                                        inputStyle={"accentColor": ACCENT, "width": "14px", "height": "14px"},
+                                        clearable=False,
+                                        searchable=False,
+                                        style=DROPDOWN_STYLE,
                                     ),
-                                    html.Div(id="model-helper", style={"fontSize": "12px", "lineHeight": "1.5", "color": TEXT_LIGHT}),
+                                    html.Div(id="model-helper", className="control-helper"),
                                 ]),
+
+                                html.Div(className="control-divider"),
 
                                 # Date input + quick-fill buttons
                                 html.Div(children=[
-                                    html.Span("When", style=LABEL_STYLE),
+                                    html.Span("3 · When", style=LABEL_STYLE),
                                     dcc.DatePickerSingle(
                                         id="date-picker",
                                         min_date_allowed=date(2000, 1, 1),
                                         max_date_allowed=date(2030, 12, 31),
                                         placeholder="Pick a date…",
                                         display_format="MMM D, YYYY",
-                                        style={"width": "100%", "marginBottom": "10px"},
+                                        style={"width": "100%", "marginBottom": "9px"},
                                     ),
                                     html.Div(
-                                        style={"display": "grid", "gridTemplateColumns": "1fr 1fr", "gap": "5px"},
+                                        className="shortcut-grid",
                                         children=[
                                             html.Button(
                                                 label,
                                                 id=f"btn-{label.lower().replace(' ', '-')}",
                                                 n_clicks=0,
-                                                style={
-                                                    "background": BG_PAGE,
-                                                    "color": TEXT_MID,
-                                                    "border": f"1px solid {BORDER}",
-                                                    "borderRadius": "7px",
-                                                    "padding": "6px 4px",
-                                                    "fontSize": "11px",
-                                                    "cursor": "pointer",
-                                                    "fontFamily": FONT,
-                                                },
+                                                className="shortcut-btn",
                                             )
                                             for label, _ in DATE_SHORTCUTS
                                         ],
                                     ),
                                 ]),
 
+                                html.Button("Run prediction", id="predict-btn", n_clicks=0,
+                                            className="primary-btn"),
+                            ]),
+
+                            # ── Map display options ──────────────────
+                            html.Div(style={**CARD_STYLE, "padding": "18px 20px"}, children=[
+                                html.Span("Map display", style=LABEL_STYLE),
                                 html.Button(
-                                    "Predict",
-                                    id="predict-btn",
+                                    id="interp-toggle",
                                     n_clicks=0,
-                                    style={
-                                        "width": "100%",
-                                        "background": ACCENT,
-                                        "color": "white",
-                                        "border": "none",
-                                        "borderRadius": "8px",
-                                        "padding": "11px",
-                                        "fontSize": "14px",
-                                        "fontWeight": "600",
-                                        "cursor": "pointer",
-                                        "fontFamily": FONT,
-                                        "letterSpacing": "0.01em",
-                                    },
+                                    className="toggle-btn",
+                                    children=[
+                                        html.Span(className="toggle-track", children=html.Span(className="toggle-knob")),
+                                        html.Span("Interpolated surface", className="toggle-label"),
+                                        html.Span("Off", id="interp-state", className="toggle-state"),
+                                    ],
+                                ),
+                                html.Div(
+                                    "Off shows the station predictions alone. On fills the gaps "
+                                    "between stations with a cubic-spline estimate — smooth, but "
+                                    "invented data wherever the network is sparse. The colour scale "
+                                    "is the same either way.",
+                                    className="control-helper",
+                                ),
+
+                                html.Div(className="control-divider", style={"margin": "16px 0"}),
+
+                                html.Button(
+                                    id="landmark-toggle",
+                                    n_clicks=0,
+                                    className="toggle-btn toggle-btn-on",
+                                    children=[
+                                        html.Span(className="toggle-track", children=html.Span(className="toggle-knob")),
+                                        html.Span("Landmarks", className="toggle-label"),
+                                        html.Span("On", id="landmark-state", className="toggle-state"),
+                                    ],
+                                ),
+                                html.Div(
+                                    "Names 12 major cities (dark squares), 6 rivers and 5 lakes "
+                                    "for orientation. Turn it off if the labels crowd the stations "
+                                    "you are reading.",
+                                    className="control-helper",
+                                ),
+                                html.Div(
+                                    className="map-key",
+                                    children=[
+                                        html.Span(className="map-key-item", children=[
+                                            html.Span(className="map-key-swatch map-key-city"),
+                                            "City",
+                                        ]),
+                                        html.Span(className="map-key-item", children=[
+                                            html.Span(className="map-key-swatch map-key-lake"),
+                                            "Lake",
+                                        ]),
+                                        html.Span(className="map-key-item", children=[
+                                            html.Span(className="map-key-swatch map-key-station"),
+                                            "Station",
+                                        ]),
+                                    ],
                                 ),
                             ]),
                             ],
@@ -1341,13 +1891,11 @@ app.layout = html.Div(
                             style={"display": "grid", "gap": "8px"},
                             children=[
                             html.Div(
-                                style={
-                                    "display": "flex", "justifyContent": "space-between",
-                                    "alignItems": "center", "padding": "0 2px",
-                                },
+                                className="map-header",
                                 children=[
-                                    html.Div(id="map-title", style={"fontSize": "13px", "fontWeight": "600", "color": TEXT_DARK}, children="Monitoring stations"),
-                                    html.Div(id="map-subtitle", style={"fontSize": "12px", "color": TEXT_LIGHT}, children="Pick a variable and date, then hit Predict"),
+                                    html.Div(id="map-title", className="map-title", children="Monitoring stations"),
+                                    html.Div(id="map-subtitle", className="map-subtitle",
+                                             children="Pick a measurement and date, then run a prediction"),
                                 ],
                             ),
                             html.Div(id="status-msg"),
@@ -1364,6 +1912,13 @@ app.layout = html.Div(
                                         },
                                     ),
                                 ],
+                            ),
+                            html.Div(
+                                id="map-footnote",
+                                className="map-footnote",
+                                children="Station features are carried forward from each site's most "
+                                         "recent observation; only the date-derived predictors change "
+                                         "with the date you pick.",
                             ),
                         ],
                         ),
@@ -1390,6 +1945,55 @@ app.layout = html.Div(
                     ],
                 ),
 
+                # ── Cross-model comparison ─────────────────────
+                html.Div(
+                    style={**CARD_STYLE, "marginTop": "24px", "padding": "24px"},
+                    children=[
+                        html.Div(
+                            className="cmp-header",
+                            children=[
+                                html.Div(children=[
+                                    html.H2("Compare every model", className="cmp-title"),
+                                    html.Div(
+                                        "Held-out test scores for all "
+                                        f"{len(TARGET_COLS)} measurements × {len(MODEL_PREFIXES)} "
+                                        "model families, from src/05_modeling/model_metrics.csv. "
+                                        "Click any row to load that pair into the controls above.",
+                                        className="cmp-subtitle",
+                                    ),
+                                ]),
+                                dcc.RadioItems(
+                                    id="cmp-scope",
+                                    options=[
+                                        {"label": "All measurements", "value": "all"},
+                                        {"label": "Selected only", "value": "selected"},
+                                    ],
+                                    value="all",
+                                    className="cmp-scope",
+                                    inputClassName="cmp-scope-input",
+                                    labelClassName="cmp-scope-label",
+                                ),
+                            ],
+                        ),
+                        html.Div(id="cmp-summary", children=_comparison_summary(None, None)),
+                        html.Div(id="cmp-table", children=_comparison_table(None, None, "all")),
+                        html.Div(
+                            className="cmp-legend",
+                            children=[
+                                html.Span([html.Span("●", className="cmp-best-dot"),
+                                           " best R² for that measurement"], className="cmp-legend-item"),
+                                html.Span("† fitted on log10 — scores shown on the log scale",
+                                          className="cmp-legend-item"),
+                                html.Span("darker bar = higher R²", className="cmp-legend-item"),
+                            ],
+                        ),
+                        html.Div(
+                            className="cmp-footnotes",
+                            children=[html.Div(note, className="cmp-footnote")
+                                      for note in COMPARISON_FOOTNOTES],
+                        ),
+                    ],
+                ),
 
             ],
         ),
@@ -1419,13 +2023,13 @@ def fill_date(*_):
 
 
 # ─────────────────────────────────────────────────────────────
-# CALLBACK: Update model-radio options when target changes
+# CALLBACK: Update model-dropdown options when target changes
 # ─────────────────────────────────────────────────────────────
 @app.callback(
-    Output("model-radio", "options"),
-    Output("model-radio", "value"),
-    Input("target-radio", "value"),
-    State("model-radio",  "value"),
+    Output("model-dropdown", "options"),
+    Output("model-dropdown", "value"),
+    Input("target-dropdown", "value"),
+    State("model-dropdown",  "value"),
     prevent_initial_call=True,
 )
 def update_model_options(target, current_model):
@@ -1440,14 +2044,69 @@ def update_model_options(target, current_model):
 
 @app.callback(
     Output("model-helper", "children"),
-    Input("model-radio", "value"),
+    Input("model-dropdown", "value"),
 )
 def update_model_helper(model_type):
     if not model_type:
         return ""
-    return html.Div(
-        MODEL_DESCRIPTIONS.get(model_type, ""),
-        style={"fontSize": "13px", "color": TEXT_MID, "lineHeight": "1.5"},
+    return MODEL_DESCRIPTIONS.get(model_type, "")
+
+
+@app.callback(
+    Output("target-helper", "children"),
+    Input("target-dropdown", "value"),
+)
+def update_target_helper(target):
+    """Surface the measurement's units and what it is useful for."""
+    if not target:
+        return "Thirteen water-quality variables are available, including the composite WQI."
+    unit = TARGET_UNITS.get(target, "")
+    note = TARGET_SHORT_NOTES.get(target, "")
+    return html.Span([html.B(f"{unit} · "), note] if unit else note)
+
+
+# ─────────────────────────────────────────────────────────────
+# CALLBACK: Interpolated-surface toggle
+# Off by default — the station predictions are the model's actual output;
+# the interpolated grid is a cubic spline drawn between them, which is
+# useful for reading regional pattern but is not data.
+# ─────────────────────────────────────────────────────────────
+@app.callback(
+    Output("interp-store",  "data"),
+    Output("interp-state",  "children"),
+    Output("interp-toggle", "className"),
+    Input("interp-toggle",  "n_clicks"),
+    State("interp-store",   "data"),
+    prevent_initial_call=True,
+)
+def toggle_interpolation(_n_clicks, enabled):
+    enabled = not bool(enabled)
+    return (
+        enabled,
+        "On" if enabled else "Off",
+        "toggle-btn toggle-btn-on" if enabled else "toggle-btn",
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# CALLBACK: Landmark toggle
+# On by default: the scope="usa" basemap carries no place names, so without
+# these labels a station dot cannot be located by eye.
+# ─────────────────────────────────────────────────────────────
+@app.callback(
+    Output("landmark-store",  "data"),
+    Output("landmark-state",  "children"),
+    Output("landmark-toggle", "className"),
+    Input("landmark-toggle",  "n_clicks"),
+    State("landmark-store",   "data"),
+    prevent_initial_call=True,
+)
+def toggle_landmarks(_n_clicks, enabled):
+    enabled = not bool(enabled)
+    return (
+        enabled,
+        "On" if enabled else "Off",
+        "toggle-btn toggle-btn-on" if enabled else "toggle-btn",
     )
 
 
@@ -1462,13 +2121,15 @@ def update_model_helper(model_type):
     Output("streak-panel", "children"),
     Output("stats-panel", "children"),
     Output("performance-panel", "children"),
-    Input("predict-btn",  "n_clicks"),
-    State("target-radio", "value"),
-    State("model-radio",  "value"),
+    Input("predict-btn",    "n_clicks"),
+    Input("interp-store",   "data"),
+    Input("landmark-store", "data"),
+    State("target-dropdown", "value"),
+    State("model-dropdown",  "value"),
     State("date-picker",  "date"),
     prevent_initial_call=True,
 )
-def run_prediction(n_clicks, target, model_type, selected_date):
+def run_prediction(n_clicks, show_interpolation, show_landmarks, target, model_type, selected_date):
     """
     Validate → load pre-trained model → build features → predict → interpolate → render.
 
@@ -1477,7 +2138,17 @@ def run_prediction(n_clicks, target, model_type, selected_date):
       - Feature matrix is built from station CSV rows + the user-chosen date only
       - Model unavailability is caught here (not just at startup) in case
         a pkl was deleted while the app was running
+
+    Also fires on the two display toggles so the map redraws without a second
+    click; the predictions themselves come out of _cached_station_predictions,
+    so that redraw costs no inference.
     """
+    ready = bool(target and selected_date and MODELS.get(target, {}).get(model_type))
+
+    # A display toggle before anything has been predicted should restyle the
+    # base map, not scold the user for not having filled the form in yet.
+    if _triggered_id() in ("interp-store", "landmark-store") and not ready:
+        return (empty_map_figure(bool(show_landmarks)),) + (no_update,) * 6
 
     # ── Input validation ─────────────────────────────
     errors = []
@@ -1491,10 +2162,10 @@ def run_prediction(n_clicks, target, model_type, selected_date):
     if errors:
         msg = html.Div(
             f"Please pick {' and '.join(errors)} first.",
-            style={"fontSize": "12px", "color": DANGER, "padding": "2px 0"},
+            className="status-msg status-msg-error",
         )
         return (
-            empty_map_figure(),
+            empty_map_figure(bool(show_landmarks)),
             msg,
             no_update,
             no_update,
@@ -1504,11 +2175,9 @@ def run_prediction(n_clicks, target, model_type, selected_date):
         )
 
     # ── Predict ──────────────────────────────────────
-    pred_date  = date.fromisoformat(selected_date)
-    station_df = predict_at_stations(target, model_type, pred_date)
-
-    # ── Interpolate to grid ──────────────────────────
-    lon_grid, lat_grid, val_grid = interpolate_to_grid(station_df)
+    pred_date    = date.fromisoformat(selected_date)
+    station_df   = predict_at_stations(target, model_type, pred_date)
+    show_surface = bool(show_interpolation)
 
     colorscale = TARGET_COLORSCALES.get(target, "Viridis")
     unit       = TARGET_UNITS.get(target, "")
@@ -1521,57 +2190,57 @@ def run_prediction(n_clicks, target, model_type, selected_date):
     preds      = station_df["predicted"]
     vmin       = float(np.percentile(preds, 2))
     vmax       = float(np.percentile(preds, 98))
-    val_grid   = np.clip(val_grid, vmin, vmax)
 
     fig = go.Figure()
 
-    # Interpolated background grid (smooth coverage between stations)
-    flat_lons = lon_grid.ravel()
-    flat_lats = lat_grid.ravel()
-    flat_vals = val_grid.ravel()
-    mask      = ~np.isnan(flat_vals)
-    idx       = np.where(mask)[0]
-    if len(idx) > 4000:                                    # downsample for performance
-        idx = np.random.default_rng(0).choice(idx, 4000, replace=False)
+    # Interpolated background grid (smooth coverage between stations). Off by
+    # default: it is a spline drawn between the model's actual outputs, not a
+    # prediction in its own right. The colour scale lives on the station trace
+    # below so the legend reads identically whether or not this layer is drawn.
+    if show_surface:
+        lon_grid, lat_grid, val_grid = interpolate_to_grid(station_df)
+        val_grid  = np.clip(val_grid, vmin, vmax)
+        flat_lons = lon_grid.ravel()
+        flat_lats = lat_grid.ravel()
+        flat_vals = val_grid.ravel()
+        idx       = np.where(~np.isnan(flat_vals))[0]
+        if len(idx) > 4000:                                # downsample for performance
+            idx = np.random.default_rng(0).choice(idx, 4000, replace=False)
 
-    fig.add_trace(go.Scattergeo(
-        lat=flat_lats[idx],
-        lon=flat_lons[idx],
-        mode="markers",
-        customdata=np.column_stack([
-            np.full(len(idx), "Interpolated surface"),
-            np.full(len(idx), target),
-            [
-                _target_assessment(target, value)["label"]
-                for value in flat_vals[idx]
-            ],
-            [
-                _target_assessment(target, value)["detail"]
-                for value in flat_vals[idx]
-            ],
-        ]),
-        marker=dict(
-            size=9,
-            color=flat_vals[idx],
-            colorscale=colorscale,
-            cmin=vmin, cmax=vmax,
-            opacity=0.72,
-            showscale=True,
-            colorbar=dict(
-                title=dict(text=f"{target}<br>({unit})", font=dict(size=13)),
-                thickness=14, len=0.7, x=1.01,
+        fig.add_trace(go.Scattergeo(
+            lat=flat_lats[idx],
+            lon=flat_lons[idx],
+            mode="markers",
+            customdata=np.column_stack([
+                np.full(len(idx), "Interpolated surface"),
+                np.full(len(idx), target),
+                [
+                    _target_assessment(target, value)["label"]
+                    for value in flat_vals[idx]
+                ],
+                [
+                    _target_assessment(target, value)["detail"]
+                    for value in flat_vals[idx]
+                ],
+            ]),
+            marker=dict(
+                size=9,
+                color=flat_vals[idx],
+                colorscale=colorscale,
+                cmin=vmin, cmax=vmax,
+                opacity=0.72,
+                showscale=False,
+                line=dict(width=0),
             ),
-            line=dict(width=0),
-        ),
-        name="Interpolated grid",
-        hovertemplate=(
-            f"<b>Interpolated {target}</b><br>"
-            f"Estimated value: %{{marker.color:.2f}} {unit}<br>"
-            "Interpretation: %{customdata[2]}<br>"
-            "%{customdata[3]}<br>"
-            "Coordinates: %{lat:.4f}°N, %{lon:.4f}°W<extra></extra>"
-        ),
-    ))
+            name="Interpolated grid",
+            hovertemplate=(
+                f"<b>Interpolated {target}</b><br>"
+                f"Estimated value: %{{marker.color:.2f}} {unit}<br>"
+                "Interpretation: %{customdata[2]}<br>"
+                "%{customdata[3]}<br>"
+                "Coordinates: %{lat:.4f}°N, %{lon:.4f}°W<extra></extra>"
+            ),
+        ))
 
     # Actual station markers on top
     station_customdata = np.column_stack([
@@ -1596,11 +2265,21 @@ def run_prediction(n_clicks, target, model_type, selected_date):
         mode="markers",
         customdata=station_customdata,
         marker=dict(
-            size=10,
+            # Slightly larger when they are the only layer on the map.
+            size=10 if show_surface else 12,
             symbol="circle",
             color=station_df["predicted"],
             colorscale=colorscale,
             cmin=vmin, cmax=vmax,
+            # The scale rides on this trace, not on the interpolated one, so it
+            # is present and identical whether or not the surface is drawn.
+            showscale=True,
+            colorbar=dict(
+                title=dict(text=f"<b>{target}</b><br>{unit}", font=dict(size=12)),
+                thickness=14, len=0.72, x=1.01,
+                tickfont=dict(size=10),
+                outlinewidth=0,
+            ),
             line=dict(color="white", width=1.2),
         ),
         name="Monitoring stations",
@@ -1617,25 +2296,42 @@ def run_prediction(n_clicks, target, model_type, selected_date):
         ),
     ))
 
-    _add_map_labels(fig)
+    _add_map_labels(fig, bool(show_landmarks))
     _apply_geo_layout(fig)
 
-    title    = f"{target}, {pred_date.strftime('%b %d, %Y')}"
-    subtitle = f"hover a dot for details  ·  {model_type}"
-    status   = ""
+    title = html.Span([
+        html.Span(target, className="map-title-target"),
+        html.Span(f" · {unit}", className="map-title-unit"),
+    ])
+    subtitle = html.Span([
+        html.Span(pred_date.strftime("%b %d, %Y"), className="map-subtitle-strong"),
+        f"  ·  {model_type}  ·  {len(station_df):,} stations",
+        html.Span("  ·  + interpolated surface" if show_surface else "  ·  stations only",
+                  className="map-subtitle-mode"),
+    ])
+    status = ""
 
     # ── Summary stats ─────────────────────────────────
     preds = station_df["predicted"]
     stats = html.Div(
         style=SIDECARD_STYLE,
         children=[
-            html.Div("Across all stations", style={"fontSize": "11px", "color": TEXT_LIGHT, "marginBottom": "12px"}),
+            _panel_heading("Statewide spread", f"{len(station_df):,} sites"),
             html.Div(
-                style={"display": "grid", "gridTemplateColumns": "1fr 1fr 1fr", "gap": "4px"},
+                className="stat-grid",
                 children=[
-                    _stat_tile("Low",  f"{preds.min():.1f} {unit}"),
-                    _stat_tile("Avg",  f"{preds.mean():.1f} {unit}"),
-                    _stat_tile("High", f"{preds.max():.1f} {unit}"),
+                    _stat_tile("Low",    _fmt_num(preds.min()),    unit),
+                    _stat_tile("Median", _fmt_num(preds.median()), unit),
+                    _stat_tile("High",   _fmt_num(preds.max()),    unit),
+                ],
+            ),
+            html.Div(
+                style={"marginTop": "10px"},
+                children=[
+                    _info_row("Average", f"{_fmt_num(preds.mean())} {unit}"),
+                    _info_row("Colour range shown", f"{_fmt_num(vmin)} – {_fmt_num(vmax)} {unit}",
+                              hint="The map's colour scale is anchored to the 2nd–98th percentile "
+                                   "of station predictions so outliers do not flatten the ramp."),
                 ],
             ),
         ],
@@ -1647,20 +2343,24 @@ def run_prediction(n_clicks, target, model_type, selected_date):
 @app.callback(
     Output("hover-panel", "children"),
     Input("usa-map", "hoverData"),
-    State("target-radio", "value"),
+    State("target-dropdown", "value"),
 )
 def update_hover_panel(hover_data, target):
     if not hover_data or "points" not in hover_data or not hover_data["points"]:
         return _hover_panel_default()
 
     point = hover_data["points"][0]
-    curve_number = point.get("curveNumber", -1)
     lat = point.get("lat")
     lon = point.get("lon")
     unit = TARGET_UNITS.get(target, "")
+    custom = point.get("customdata")
 
-    if curve_number == 1 and point.get("customdata"):
-        custom = point["customdata"]
+    # Identify the trace by the shape of its customdata rather than by curve
+    # index: the interpolated layer is optional, so the station trace is not
+    # always curve 1.
+    is_station = bool(custom) and len(custom) >= 8
+
+    if is_station:
         station_name, station_id, provider, climate_station, distance_km, predicted, assessment_label, assessment_detail = custom
         pred_val = float(predicted)
         assessment = _target_assessment(target, pred_val)
@@ -1668,41 +2368,33 @@ def update_hover_panel(hover_data, target):
         return html.Div(
             style=SIDECARD_STYLE,
             children=[
-                html.Div(f"Near {city}", style={"fontSize": "22px", "fontWeight": "700", "color": TEXT_DARK, "marginBottom": "4px", "lineHeight": "1.2"}),
-                html.Div(station_name, style={"fontSize": "11px", "color": TEXT_LIGHT, "marginBottom": "14px", "lineHeight": "1.4"}),
+                _panel_heading("Point detail", "monitoring station"),
+                html.Div(f"Near {city}", className="hover-place"),
+                html.Div(station_name, className="hover-station"),
                 html.Div(
-                    style={"display": "flex", "alignItems": "baseline", "gap": "5px"},
+                    className="hover-value",
                     children=[
-                        html.Span(f"{pred_val:.1f}", style={"fontSize": "28px", "fontWeight": "700", "color": ACCENT, "lineHeight": "1"}),
-                        html.Span(unit, style={"fontSize": "14px", "color": TEXT_LIGHT}),
+                        html.Span(f"{pred_val:.1f}", style={"color": ACCENT}),
+                        html.Span(unit, className="hover-value-unit"),
                     ],
                 ),
                 html.Div(
                     assessment_label,
-                    style={
-                        "display": "inline-block",
-                        "marginTop": "10px",
-                        "padding": "4px 10px",
-                        "borderRadius": "999px",
-                        "background": "#f8fafc",
-                        "border": f"1px solid {assessment['color']}",
-                        "color": assessment["color"],
-                        "fontSize": "11px",
-                        "fontWeight": "700",
-                    },
+                    className="assessment-pill",
+                    style={"borderColor": assessment["color"], "color": assessment["color"]},
                 ),
+                html.Div(assessment_detail, className="hover-detail"),
                 html.Div(
-                    assessment_detail,
-                    style={"fontSize": "11px", "color": TEXT_MID, "marginTop": "10px", "lineHeight": "1.5"},
-                ),
-                html.Div(
-                    [
+                    style={"marginTop": "12px"},
+                    children=[
                         _info_row("Station ID", str(station_id)),
                         _info_row("Provider", str(provider)),
                         _info_row("Climate station", str(climate_station)),
-                        _info_row("Distance", f"{float(distance_km):.1f} km"),
+                        _info_row("Distance", f"{float(distance_km):.1f} km",
+                                  hint="Distance from this station to the weather station "
+                                       "supplying its climate predictors."),
+                        _info_row("Coordinates", f"{float(lat):.4f}°N, {abs(float(lon)):.4f}°W"),
                     ],
-                    style={"marginTop": "10px"},
                 ),
             ],
         )
@@ -1715,38 +2407,80 @@ def update_hover_panel(hover_data, target):
     return html.Div(
         style=SIDECARD_STYLE,
         children=[
-            html.Div(f"Near {city}", style={"fontSize": "22px", "fontWeight": "700", "color": TEXT_DARK, "marginBottom": "14px", "lineHeight": "1.2"}),
+            _panel_heading("Point detail", "interpolated"),
+            html.Div(f"Near {city}", className="hover-place"),
+            html.Div("Not a monitoring station — a spline estimate between them.",
+                     className="hover-station"),
             html.Div(
-                style={"display": "flex", "alignItems": "baseline", "gap": "5px"},
+                className="hover-value",
                 children=[
-                    html.Span(
-                        f"{numeric_value:.1f}" if numeric_value is not None else "—",
-                        style={"fontSize": "28px", "fontWeight": "700", "color": TEXT_MID, "lineHeight": "1"},
-                    ),
-                    html.Span(unit, style={"fontSize": "14px", "color": TEXT_LIGHT}),
+                    html.Span(f"{numeric_value:.1f}" if numeric_value is not None else "—",
+                              style={"color": TEXT_MID}),
+                    html.Span(unit, className="hover-value-unit"),
                 ],
             ),
-            html.Div("estimated", style={"fontSize": "11px", "color": TEXT_LIGHT, "marginTop": "4px"}),
             html.Div(
                 assessment["label"],
-                style={
-                    "display": "inline-block",
-                    "marginTop": "10px",
-                    "padding": "4px 10px",
-                    "borderRadius": "999px",
-                    "background": "#f8fafc",
-                    "border": f"1px solid {assessment['color']}",
-                    "color": assessment["color"],
-                    "fontSize": "11px",
-                    "fontWeight": "700",
-                },
+                className="assessment-pill",
+                style={"borderColor": assessment["color"], "color": assessment["color"]},
             ),
+            html.Div(assessment["detail"], className="hover-detail"),
             html.Div(
-                assessment["detail"],
-                style={"fontSize": "11px", "color": TEXT_MID, "marginTop": "10px", "lineHeight": "1.5"},
+                style={"marginTop": "12px"},
+                children=[
+                    _info_row("Coordinates",
+                              f"{float(lat):.4f}°N, {abs(float(lon)):.4f}°W"
+                              if lat is not None and lon is not None else "—"),
+                ],
             ),
         ],
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# CALLBACK: Cross-model comparison table
+# ─────────────────────────────────────────────────────────────
+@app.callback(
+    Output("cmp-table",   "children"),
+    Output("cmp-summary", "children"),
+    Input("target-dropdown", "value"),
+    Input("model-dropdown",  "value"),
+    Input("cmp-scope",       "value"),
+)
+def update_comparison(target, model_type, scope):
+    """Re-render the table so the current pair is highlighted and the scope filter applies."""
+    return (
+        _comparison_table(target, model_type, scope or "all"),
+        _comparison_summary(target, model_type),
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# CALLBACK: Click a comparison row to load that target/model pair
+#
+# Writes both dropdowns at once. Dash applies every output of a callback
+# before firing downstream ones, so update_model_options — which listens on
+# the target dropdown — sees the new model in its State and leaves it alone.
+# ─────────────────────────────────────────────────────────────
+@app.callback(
+    Output("target-dropdown", "value", allow_duplicate=True),
+    Output("model-dropdown",  "value", allow_duplicate=True),
+    Input({"type": "cmp-row", "target": ALL, "model": ALL}, "n_clicks"),
+    prevent_initial_call=True,
+)
+def select_from_comparison(_clicks):
+    triggered = callback_context.triggered
+    # Re-rendering the table mounts fresh rows at n_clicks=0, which fires this
+    # callback; only a real click carries a positive count.
+    if not triggered or not triggered[0].get("value"):
+        return no_update, no_update
+
+    row_id = callback_context.triggered_id
+    target = row_id["target"]
+    model_type = row_id["model"]
+    if not MODELS.get(target, {}).get(model_type):
+        return no_update, no_update
+    return target, model_type
 
 
 # ─────────────────────────────────────────────────────────────
