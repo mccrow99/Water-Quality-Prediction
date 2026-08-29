@@ -6,7 +6,7 @@ Held-out test-set results for every water-quality model trained in
 
 ## Setup (shared by all models)
 
-- **Dataset:** `data/03c_merge_tertiary/epa-full.csv` (48,251 rows × 318 columns)
+- **Dataset:** `data/final/epa-full.csv` (48,251 rows × 318 columns)
 - **Predictors:** 29 environmental / spatial / temporal features (location, PRISM
   climate, ISU weather, streamflow, soil, land cover, nutrient loading, plus
   day-of-year seasonality and observation year). Other water-quality `_value`
@@ -249,19 +249,28 @@ add there.
 
 | Target | Scale | N test | N stations | R² | R² (log) | RMSE | MAE | Error Rate (%) | Persistence R² | Margin |
 |---|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| Water Temperature | raw | 6,092 | 200 | 0.9466 | — | 2.0367 | 1.5004 | 21.19 | 0.640 | +0.309 |
-| Specific Conductance | raw | 4,617 | 97 | 0.6545 | — | 119.3700 | 81.7043 | 16.00 | 0.856 | -0.201 |
-| Total Dissolved Solids | raw | 3,902 | 117 | 0.5329 | — | 85.9466 | 66.9173 | 21.30 | 0.811 | -0.277 |
-| Nitrate + Nitrite | raw | 1,045 | 74 | 0.5047 | — | 3.1810 | 2.2072 | 64.87 | 0.190 | +0.276 |
-| Dissolved Oxygen | raw | 6,640 | 182 | 0.4910 | — | 1.9166 | 1.2894 | 15.44 | 0.325 | +0.175 |
-| Nitrate | raw | 2,719 | 56 | 0.4593 | — | 4.2114 | 2.5166 | 102.50 | 0.398 | +0.058 |
-| pH | raw | 5,673 | 222 | 0.4115 | — | 0.4860 | 0.3483 | 4.43 | -0.060 | +0.476 |
-| WQI | raw | 4,622 | 189 | 0.3367 | — | 13.9718 | 11.2770 | 28.05 | 0.172 | +0.168 |
-| E. coli | log10 | 3,831 | 87 | 0.0526 | **0.3550** | 9,816.1469 | 1,387.3184 | 92.69 | -0.741 | +0.793 |
-| Total Suspended Solids | log10 | 2,435 | 111 | 0.0254 | **0.3666** | 205.9108 | 44.8811 | 70.84 | -0.993 | +1.036 |
-| Turbidity | log10 | 3,581 | 169 | 0.0184 | **0.3302** | 86.7582 | 22.3671 | 68.75 | -0.788 | +0.805 |
-| Nitrite | raw | 2,271 | 46 | 0.0026 | — | 0.1223 | 0.0419 | 175.18 | -0.690 | +0.694 |
-| Total Phosphorus | log10 | 1,294 | 91 | -0.0126 | **0.1748** | 0.4798 | 0.1782 | 60.43 | 0.319 | -0.335 |
+| Water Temperature | raw | 6,092 | 200 | 0.9377 | — | 2.1995 | 1.6476 | 22.52 | 0.640 | +0.300 |
+| Specific Conductance | raw | 4,617 | 97 | 0.5460 | — | 136.8345 | 87.2843 | 16.94 | 0.856 | -0.306 |
+| Total Dissolved Solids | raw | 3,902 | 117 | 0.5334 | — | 85.9018 | 66.7102 | 21.32 | 0.811 | -0.276 |
+| Dissolved Oxygen | raw | 6,640 | 182 | 0.4765 | — | 1.9437 | 1.3224 | 15.74 | 0.325 | +0.162 |
+| Nitrate | raw | 2,719 | 56 | 0.4545 | — | 4.2298 | 2.5346 | 102.69 | 0.398 | +0.056 |
+| Nitrate + Nitrite | raw | 1,045 | 74 | 0.4421 | — | 3.3763 | 2.3818 | 68.13 | 0.190 | +0.216 |
+| pH | raw | 5,673 | 222 | 0.3751 | — | 0.5008 | 0.3613 | 4.59 | -0.060 | +0.440 |
+| WQI | raw | 4,622 | 189 | 0.2880 | — | 14.4750 | 11.8490 | 29.36 | 0.172 | +0.121 |
+| E. coli | log10 | 3,831 | 87 | 0.0777 | **0.3462** | 9,685.3567 | 1,476.1734 | 101.91 | -0.741 | +0.818 |
+| Turbidity | log10 | 3,581 | 169 | 0.0274 | **0.2963** | 86.3598 | 23.0101 | 72.99 | -0.788 | +0.815 |
+| Total Suspended Solids | log10 | 2,435 | 111 | 0.0243 | **0.3475** | 206.0231 | 45.6638 | 75.90 | -0.993 | +1.034 |
+| Nitrite | raw | 2,271 | 46 | 0.0110 | — | 0.1218 | 0.0395 | 177.77 | -0.690 | +0.701 |
+| Total Phosphorus | log10 | 1,294 | 91 | 0.0007 | **0.1782** | 0.4767 | 0.1765 | 59.99 | 0.319 | -0.309 |
+
+These forests are deliberately **capped at 100 trees with `min_samples_leaf=10`**.
+Grown out (300 trees, leaf floor 2) they scored a mean 0.018 R² higher, but cost
+1.8 GB across the 13 targets — too large to push to GitHub and far past the
+memory of the 512 MB instance the dashboard is deployed on. The capped forests
+total 130 MB. Two targets paid most of that: Specific Conductance (0.6545 →
+0.5460) and Nitrate + Nitrite (0.5047 → 0.4421); five others moved by less than
+0.01, and four log-fitted targets improved slightly. See "Model size and the
+deployment ceiling" below.
 
 ## Gradient Boosting (HistGradientBoostingRegressor)
 
@@ -372,19 +381,19 @@ Best model per target in **bold**.
 
 | Target | N test | N stations | Linear | Random Forest | Gradient Boosting | Neural Net | Best |
 |---|--:|--:|--:|--:|--:|--:|:--|
-| Water Temperature | 6,092 | 200 | 0.8947 | **0.9466** | 0.9402 | 0.9207 | Random Forest |
-| Specific Conductance | 4,617 | 97 | 0.2195 | **0.6545** | 0.2619 | 0.0203 | Random Forest |
-| Total Dissolved Solids | 3,902 | 117 | 0.4211 | **0.5329** | 0.4324 | 0.4249 | Random Forest |
-| Nitrate + Nitrite | 1,045 | 74 | 0.2176 | 0.5047 | **0.5150** | 0.3261 | Gradient Boosting |
-| Dissolved Oxygen | 6,640 | 182 | 0.3877 | **0.4910** | 0.4670 | 0.4520 | Random Forest |
-| Nitrate | 2,719 | 56 | 0.1719 | **0.4593** | 0.3925 | 0.2382 | Random Forest |
-| pH | 5,673 | 222 | 0.1707 | **0.4115** | 0.3493 | 0.1621 | Random Forest |
-| WQI | 4,622 | 189 | 0.0763 | **0.3367** | 0.2778 | 0.1056 | Random Forest |
-| Total Suspended Solids | 2,435 | 111 | -0.0255\* | 0.0254\* | **0.0664\*** | 0.0652 | Gradient Boosting |
-| E. coli | 3,831 | 87 | 0.0254\* | 0.0526\* | **0.0629\*** | 0.0256 | Gradient Boosting |
-| Turbidity | 3,581 | 169 | -0.0145\* | 0.0184\* | 0.0377\* | **0.0575\*** | Neural Net † |
-| Total Phosphorus | 1,294 | 91 | 0.0228 | -0.0126\* | **0.0375\*** | 0.0202\* | Gradient Boosting |
-| Nitrite | 2,271 | 46 | -0.0033 | **0.0026** | -0.1453 | -0.1864 | Random Forest |
+| Water Temperature | 6,092 | 200 | 0.8947 | 0.9377 | **0.9402** | 0.9207 | Gradient Boosting |
+| Specific Conductance | 4,617 | 97 | 0.2195 | **0.5460** | 0.2619 | 0.0203 | Random Forest |
+| Total Dissolved Solids | 3,902 | 117 | 0.4211 | **0.5334** | 0.4324 | 0.4249 | Random Forest |
+| Nitrate + Nitrite | 1,045 | 74 | 0.2176 | 0.4421 | **0.5150** | 0.3261 | Gradient Boosting |
+| Dissolved Oxygen | 6,640 | 182 | 0.3877 | **0.4765** | 0.4670 | 0.4520 | Random Forest |
+| Nitrate | 2,719 | 56 | 0.1719 | **0.4545** | 0.3925 | 0.2382 | Random Forest |
+| pH | 5,673 | 222 | 0.1707 | **0.3751** | 0.3493 | 0.1621 | Random Forest |
+| WQI | 4,622 | 189 | 0.0763 | **0.2880** | 0.2778 | 0.1056 | Random Forest |
+| Total Suspended Solids | 2,435 | 111 | -0.0255\* | 0.0243\* | **0.0664\*** | 0.0652 | Gradient Boosting |
+| E. coli | 3,831 | 87 | 0.0254\* | **0.0777\*** | 0.0629\* | 0.0256 | Random Forest \* |
+| Turbidity | 3,581 | 169 | -0.0145\* | 0.0274\* | 0.0377\* | **0.0575\*** | Neural Net † |
+| Total Phosphorus | 1,294 | 91 | 0.0228 | 0.0007\* | **0.0375\*** | 0.0202\* | Gradient Boosting |
+| Nitrite | 2,271 | 46 | -0.0033 | **0.0110** | -0.1453 | -0.1864 | Random Forest |
 
 \* fitted on `log10(y + c)`. **The raw-scale R² above is not the number to read
 for these** — it is the score of a log fit measured on the scale it was
@@ -393,15 +402,15 @@ Their real comparison is the log scale:
 
 | Target | Linear | Random Forest | Gradient Boosting | Neural Net | Best |
 |---|--:|--:|--:|--:|:--|
-| Total Suspended Solids | 0.1509 | **0.3666** | 0.3378 | — (raw) | Random Forest |
-| E. coli | 0.2043 | 0.3550 | **0.3580** | — (raw) | Gradient Boosting |
-| Turbidity | 0.0618 | **0.3302** | 0.2832 | 0.2245 | Random Forest |
-| Total Phosphorus | — (raw) | 0.1748 | **0.1891** | 0.0987 | Gradient Boosting |
+| Total Suspended Solids | 0.1509 | **0.3475** | 0.3378 | — (raw) | Random Forest |
+| E. coli | 0.2043 | 0.3462 | **0.3580** | — (raw) | Gradient Boosting |
+| Turbidity | 0.0618 | **0.2963** | 0.2832 | 0.2245 | Random Forest |
+| Total Phosphorus | — (raw) | 0.1782 | **0.1891** | 0.0987 | Gradient Boosting |
 
 † **The neural network's one win does not survive being read on the right
 scale.** Turbidity is log-fitted in all four families, so the comparison that
 counts is the log row above — where the network's 0.2245 is last of the three
-log fits and random forest leads at 0.3302. Its raw-scale lead is an artifact of
+log fits and random forest leads at 0.2963. Its raw-scale lead is an artifact of
 the same extreme-tail sensitivity the footnote warns about. And even taken at
 face value, +0.020 over gradient boosting sits inside the network's own 0.090
 seed spread. **The correct summary is that the MLP wins nothing.**
@@ -467,7 +476,7 @@ from `FEATURE_COLS`.
 
 | Model | Scale | R² | RMSE | MAE | sMAPE (%) | Persistence R² | Margin |
 |---|:--|--:|--:|--:|--:|--:|--:|
-| **Random Forest** | raw | **0.3367** | 13.9718 | 11.2770 | 28.05 | 0.172 | **+0.168** |
+| **Random Forest** | raw | **0.2880** | 14.4750 | 11.8490 | 29.36 | 0.172 | **+0.121** |
 | Gradient Boosting | raw | 0.2778 | 14.5790 | 11.7870 | 29.25 | 0.172 | +0.108 |
 | Neural Network | raw | 0.1056 | 16.2235 | 13.2849 | 32.52 | 0.172 | −0.062 |
 | Linear Regression | raw | 0.0763 | 16.4872 | 13.6658 | 33.18 | 0.172 | −0.091 |
@@ -509,6 +518,13 @@ regression in the model. Their gain is on the log scale, in the table above.
 **−`pct_row_crops`** = grouped split with the redundant column dropped (29
 features); **now** = the four skewed targets additionally fitted on
 `log10(y + c)`.
+
+This table is a **frozen record of those three changes**, so its random-forest
+rows are the pre-cap forests (300 trees, leaf floor 2) that were current when it
+was written. They no longer match the shipped models — the leaf floor was raised
+afterwards, for size rather than accuracy. Read the current numbers from the
+sections above; read this table only for the effect of the split, the dropped
+feature and the transform, each of which is unaffected by the cap.
 
 | Target | Best model | leaky | grouped | −`pct_row_crops` | now | split cost | feature cost | log cost (raw scale) |
 |---|:--|--:|--:|--:|--:|--:|--:|--:|
@@ -609,6 +625,48 @@ Total Phosphorus is the exception and stays honest in both framings: persistence
 reaches 0.377 on the log scale against the best model's 0.189, so a site's last
 reading remains the better forecast. It joins Specific Conductance and TDS on
 the list of targets waiting for `y_prev`.
+
+## Model size and the deployment ceiling
+
+A model that cannot be shipped is not a result. The random forests were
+originally grown without a leaf floor (`min_samples_leaf=2`, `max_depth=None`,
+300 trees), which on ~35k training rows produced about **12,000 nodes per tree
+and 4.0 million nodes per forest** — 286 MB for `rf_water_temperature.pkl` alone
+and **1.8 GB across the 13 targets**. That is not a modelling quantity; it is
+the training set stored in tree form.
+
+It failed twice over. Individual files exceeded GitHub's 100 MB per-file hard
+limit, so the models could not be pushed at all, and even compressed (gzip gets
+a forest down about 3.9×) the app still has to hold every pickle in memory at
+startup — 1.9 GB against a 512 MB instance. Compression cannot fix the second
+problem, because decompression makes the peak worse rather than better.
+
+Capping at **100 trees with `min_samples_leaf=10`** cuts a forest ~14× for a
+mean R² cost of 0.018:
+
+| | before | after |
+|---|--:|--:|
+| Nodes per forest (Water Temperature) | 3,976,320 | 249,996 |
+| Largest single `.pkl` | 286 MB | 17 MB |
+| All 13 random forests | 1.8 GB | 130 MB |
+| All 52 models, four families | 1.9 GB | 165 MB |
+
+The tree count is nearly free — dropping 300 → 100 barely moves the score — so
+the leaf floor is doing essentially all of the compression. The cost is not
+spread evenly: Specific Conductance gives up 0.109 R² and Nitrate + Nitrite
+0.063, while seven targets move by less than 0.015 and four log-fitted targets
+come out marginally ahead. Specific Conductance was already the clearest failure
+against persistence (−0.31 margin), so the target that paid most was the one
+whose score was least trustworthy to begin with.
+
+One verdict changed: **Water Temperature's best model is now gradient boosting**
+(0.9402 vs the capped forest's 0.9377), where it was random forest at 0.9466.
+
+Two consequences worth keeping in view. Deployment is now a real constraint on
+hyperparameters, not an afterthought — anything that regrows the forests
+reintroduces the failure. And a fully-grown forest on this feature set was
+memorizing rows it should not have needed: the score it bought was, on nine of
+thirteen targets, worth less than 0.015 R².
 
 ## Takeaways
 

@@ -8,7 +8,7 @@ Consolidated findings from the three exploratory notebooks in `src/04_eda/`:
 | [`bivariate-analysis.ipynb`](bivariate-analysis.ipynb) | One pair at a time — shape, effect size, influence, cluster-robust reliability, autocorrelation in time and space |
 | [`multivariate-analysis.ipynb`](multivariate-analysis.ipynb) | The input space as a whole — collinearity, VIF, PCA, mutual information, between/within-station decomposition |
 
-**Input:** `data/03c_merge_tertiary/epa-full.csv` — 48,251 rows × 315 columns, 1,345 monitoring
+**Input:** `data/final/epa-full.csv` — 48,251 rows × 315 columns, 1,345 monitoring
 stations, 555 HUC-12 watersheds, all 99 Iowa counties, 21 organizations, 2015-01-02 → 2025-12-25.
 Supporting tables are in `src/04_eda/outputs/` (`bv_` = bivariate, `mv_` = multivariate).
 

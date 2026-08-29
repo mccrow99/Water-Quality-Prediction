@@ -8,16 +8,24 @@ src/**/__pycache__/
 .DS_Store
 
 # Data
-data/
+# The raw, cleaned and merged tables are large and reproducible from the
+# pipeline, so they stay out of git. The one exception is the collapsed station
+# table: the deployed dashboard needs it and cannot rebuild it without the
+# 81 MB epa-full.csv that this rule excludes. Note the pattern must be `data/*`
+# rather than `data/`, because git cannot re-include a file whose parent
+# directory is itself excluded.
+data/*
+!data/stations.csv
 
 # Claude files
 CLAUDE.md
 
 # Saved models
-src/05_modeling/linear_regression/*.pkl
-src/05_modeling/random_forest/*.pkl
-src/05_modeling/gradient_boosting/*.pkl
-src/05_modeling/neural_network/*.pkl
+# Tracked, not ignored — the app loads them at startup and cannot train on the
+# host. They total ~165 MB (largest single file 17 MB), which fits inside
+# GitHub's 100 MB per-file limit without LFS. Keep them that way: this was
+# 1.9 GB before the random forests were given a leaf floor, and at that size
+# the deploy failed both on push and on the host's 512 MB of RAM.
 
 # EDA outputs
 /src/04_eda/outputs/

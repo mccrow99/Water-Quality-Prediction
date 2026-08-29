@@ -5,7 +5,7 @@ Dash/Plotly app for predicting water quality across Iowa monitoring
 stations using pre-trained scikit-learn models loaded from disk.
 
 Expected files on the server (set paths in CONFIGURATION below):
-  DATA_FILE_PATH          – data/03c_merge_tertiary/epa-full.csv
+  DATA_FILE_PATH          – data/final/epa-full.csv
   MODEL_DIR               – src/05_modeling/, with one sub-folder per model
                             family, each holding one .pkl per target:
                               linear_regression/lr_<target>.pkl
@@ -57,7 +57,11 @@ warnings.filterwarnings("ignore")
 # CONFIGURATION  ← edit these paths to match your server layout
 # ─────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
-DATA_FILE_PATH = BASE_DIR / "data/03c_merge_tertiary/epa-full.csv"
+DATA_FILE_PATH = BASE_DIR / "data/final/epa-full.csv"
+# The collapsed station table, written by build_station_table.py. This is the
+# file the deployed app runs on: DATA_FILE_PATH is gitignored and 81 MB, and
+# the app only ever wanted its one-row-per-station projection anyway.
+STATION_FILE_PATH = BASE_DIR / "data/stations.csv"
 MODEL_DIR = BASE_DIR / "src/05_modeling"        # folder containing the model sub-folders
 METRICS_PATH = BASE_DIR / "src/05_modeling/model_metrics.csv"
 
@@ -537,11 +541,35 @@ def load_model_metrics() -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────
 def load_station_data() -> pd.DataFrame:
     """
-    Load the CSV and return one representative row per monitoring station.
-    We keep the most-recent observation per station so that lat/lon and
-    feature values are up to date without duplicating stations on the map.
+    Return one representative row per monitoring station — the most-recent
+    observation, so lat/lon and feature values are up to date without
+    duplicating stations on the map.
+
+    Two sources, same result. `data/stations.csv` is that collapse already
+    performed and committed (1,345 rows, 2.7 MB); the full modeling table is
+    gitignored and 81 MB, so on a deployed host the small file is the only one
+    present. Locally either may exist, and the precomputed one is preferred
+    because it skips parsing 48,251 rows at every startup.
+
+    The fallback recomputes it inline, so a missing or stale station table
+    costs startup time rather than correctness. Regenerate it with
+    `python3 build_station_table.py` after `epa-full.csv` changes.
     """
-    df = pd.read_csv(DATA_FILE_PATH, parse_dates=[DATE_COL])
+    if STATION_FILE_PATH.exists():
+        stations = pd.read_csv(STATION_FILE_PATH, parse_dates=[DATE_COL],
+                               low_memory=False)
+        print(f"[INFO] Loaded {len(stations)} unique monitoring stations "
+              f"from '{STATION_FILE_PATH}'")
+        return stations
+
+    if not DATA_FILE_PATH.exists():
+        raise FileNotFoundError(
+            f"Found neither the station table ({STATION_FILE_PATH}) nor the "
+            f"full modeling table ({DATA_FILE_PATH}). The deployed app ships "
+            "the former — run `python3 build_station_table.py` and commit it."
+        )
+
+    df = pd.read_csv(DATA_FILE_PATH, parse_dates=[DATE_COL], low_memory=False)
     df = df.sort_values(DATE_COL)
 
     # Deduplicate: one row per station (latest observation)
@@ -551,7 +579,8 @@ def load_station_data() -> pd.DataFrame:
           .reset_index()
     )
     print(f"[INFO] Loaded {len(stations)} unique monitoring stations "
-          f"from '{DATA_FILE_PATH}'")
+          f"from '{DATA_FILE_PATH}' (station table not found; "
+          "run build_station_table.py to speed up startup)")
     return stations
 
 

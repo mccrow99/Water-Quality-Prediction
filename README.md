@@ -28,7 +28,7 @@ This repository is maintained as a completed project snapshot, with pre-trained 
 
 This project enables predictive water quality modeling and analysis across Iowa using a comprehensive, multi-source dataset. The core application answers: **given the location of an EPA monitoring station and a date, what water quality should we expect there?**
 
-The repository integrates data spanning water quality, climate, streamflow, soil, land use, agriculture, and regulatory sources into one modeling table (`data/03c_merge_tertiary/epa-full.csv`, 48,251 rows × 315 columns before EDA, 318 after). See [`DATA.md`](DATA.md) for the full data dictionary and [`MERGE.md`](MERGE.md) for exactly how each source is joined.
+The repository integrates data spanning water quality, climate, streamflow, soil, land use, agriculture, and regulatory sources into one modeling table (`data/final/epa-full.csv`, 48,251 rows × 315 columns before EDA, 318 after). See [`DATA.md`](DATA.md) for the full data dictionary and [`MERGE.md`](MERGE.md) for exactly how each source is joined.
 
 Three scikit-learn model families (Linear Regression, Random Forest, Gradient Boosting) are trained for each of **thirteen** water quality targets:
 
@@ -96,7 +96,7 @@ At a glance:
 │   │   └── 02_clean/                       # Tabular crosswalks from spatial joins
 │   ├── 03a_merge_primary/                  # P1–P7 primary merges (per-source, station/county grain)
 │   ├── 03b_merge_secondary/                # S1–S2 secondary merges
-│   ├── 03c_merge_tertiary/
+│   ├── final/
 │   │   └── epa-full.csv                    # Terminal modeling table (48,251 × 318), used by app.py
 │   ├── images/water-images/                # Water quality classification image samples
 │   └── text/raw/                           # City-level water summary narratives
@@ -179,7 +179,7 @@ Then open your browser and go to:
 http://127.0.0.1:8050
 ```
 
-The app loads all 39 pre-trained `.pkl` models from `src/05_modeling/<family>/` at startup, along with `data/03c_merge_tertiary/epa-full.csv` and `src/05_modeling/model_metrics.csv` — no retraining needed. Any target/model combination whose file is missing, or whose stored feature list disagrees with the app's, is disabled in the UI rather than crashing the app.
+The app loads all 39 pre-trained `.pkl` models from `src/05_modeling/<family>/` at startup, along with `data/final/epa-full.csv` and `src/05_modeling/model_metrics.csv` — no retraining needed. Any target/model combination whose file is missing, or whose stored feature list disagrees with the app's, is disabled in the UI rather than crashing the app.
 
 ---
 
@@ -213,7 +213,7 @@ src/02_clean/      → data/tabular/02_clean/       Cleaning notebooks, one per 
                      data/spatial/02_clean/       Spatial-join crosswalks (e.g. station → HUC-12)
 src/03_merge/      → data/03a_merge_primary/      P1–P7: per-source merges onto station/county grain
                      data/03b_merge_secondary/    S1–S2: station-day + station-year context
-                     data/03c_merge_tertiary/     T1: epa-full.csv, the terminal modeling table
+                     data/final/     T1: epa-full.csv, the terminal modeling table
 src/04_eda/        → epa-full.csv (in place)      3 read-only EDA notebooks + WQI calculation
 src/05_modeling/   → src/05_modeling/<family>/*.pkl   3 training notebooks, 13 targets each
                      model_metrics.csv

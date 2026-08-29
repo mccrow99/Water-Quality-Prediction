@@ -1,0 +1,40 @@
+# Runtime dependencies for the deployed dashboard (Render).
+#
+# This is the serving environment only. It is NOT enough to run the pipeline
+# notebooks or regenerate the models — use requirements.txt for that, which
+# additionally carries matplotlib/seaborn (EDA plots), geopandas/shapely/pyproj/
+# pyogrio (the spatial joins in src/02_clean) and jupyterlab/ipykernel.
+#
+# app.py imports exactly five third-party packages — numpy, pandas, scipy,
+# dash and plotly — plus scikit-learn, which is needed to unpickle the 52
+# models even though app.py never imports it by name. Everything else here is
+# a pinned transitive dependency of those six, or the WSGI server.
+#
+# Verified by installing this file alone into a clean virtualenv and running
+# the full test suite (test_app.py, 10 tests) against it.
+
+# --- Direct imports in app.py ---
+numpy==2.4.3
+pandas==3.0.1
+scipy==1.17.1
+dash==4.1.0
+plotly==6.7.0
+
+# --- Required to unpickle src/05_modeling/**/*.pkl ---
+# The pickles hold fitted sklearn Pipelines; the class definitions must be
+# importable at load time or every model is disabled.
+scikit_learn==1.8.0
+joblib==1.5.3
+threadpoolctl==3.6.0
+
+# --- Pinned transitive dependencies ---
+# Left explicit so a resolver change cannot move them underneath the app:
+# werkzeug and click come in via dash's Flask server, narwhals via plotly.
+werkzeug==3.1.8
+click==8.3.2
+narwhals==2.19.0
+
+# --- WSGI server ---
+# Start command: gunicorn app:server --workers 1 --threads 4
+# Keep it at one worker: each worker holds its own ~290 MB copy of the models.
+gunicorn==23.0.0
