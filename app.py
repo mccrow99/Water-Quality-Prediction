@@ -178,11 +178,17 @@ TARGET_COLORSCALES = {
     "WQI":                    "RdYlGn_r",
 }
 
+# Keep these honest against model_metrics.csv — they are the only place the UI
+# ranks the families in words, and a retrain can move the ranking. Current
+# standing, scored the same way the comparison table below is (log scale where
+# the model was log-fitted, raw otherwise): Random Forest best on 9 of 13
+# targets, Gradient Boosting on 4, and neither Linear Regression nor the
+# Neural Network best on any.
 MODEL_DESCRIPTIONS = {
-    "Gradient Boosting": "Highest-accuracy tree ensemble with stronger seasonal and nonlinear pattern capture.",
-    "Random Forest": "Robust ensemble model with richer nonlinear behavior and stable predictions across stations.",
+    "Gradient Boosting": "Boosted tree ensemble — close behind random forest overall, and the best model on four targets including water temperature.",
+    "Random Forest": "Bagged tree ensemble — the strongest family here, best on 9 of the 13 targets and stable across stations.",
     "Linear Regression": "Fast baseline model with simpler, interpretable behavior.",
-    "Neural Network": "Averaged multilayer perceptrons — smooth nonlinear fits, generally between the linear and tree models.",
+    "Neural Network": "Averaged multilayer perceptrons — smooth nonlinear fits, but beaten by a tree ensemble on every target.",
 }
 
 TARGET_SHORT_NOTES = {
