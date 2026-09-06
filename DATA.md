@@ -4,7 +4,7 @@ A catalog of every dataset in this repository: where it comes from, and what eac
 column measures. Paths reflect the current `data/tabular/01_raw` · `02_clean`
 layout (raw inputs, cleaned tables). The cleaned tables below are combined into
 merged modeling tables under `data/03a_merge_primary/` · `03b_merge_secondary/` ·
-`03c_merge_tertiary/` — all now built; see `MERGE.md` for the per-stage inventory,
+`final/` — all now built; see `MERGE.md` for the per-stage inventory,
 keys, and the terminal `epa-full.csv` modeling table.
 
 Units are noted where the source defines them. Identifiers used to join datasets
@@ -47,7 +47,7 @@ together are flagged as **(key)**.
 - [Merged Datasets](#merged-datasets)
   - [Primary merges](#primary-merges-data03a_merge_primary)
   - [Secondary merges](#secondary-merges-data03b_merge_secondary)
-  - [Tertiary merge](#tertiary-merge-data03c_merge_tertiary)
+  - [Tertiary merge](#tertiary-merge-datafinal)
 - [Imagery & Text](#imagery--text)
 
 ---
@@ -1264,7 +1264,7 @@ the per-domain sections above.
 | P7 | `03a_merge_primary/census-population.csv` | 17,877 | 6 | 1 row / city + year + estimate type |
 | S1 | `03b_merge_secondary/wq-geo-soil-daily.csv` | 48,251 | 102 | 1 row / WQ measurement event |
 | S2 | `03b_merge_secondary/station-year-context.csv` | 18,326 | 217 | 1 row / station + year |
-| T1 | `03c_merge_tertiary/epa-full.csv` | 48,251 | 318 | 1 row / WQ measurement event — **terminal modeling table** |
+| T1 | `final/epa-full.csv` | 48,251 | 318 | 1 row / WQ measurement event — **terminal modeling table** |
 
 ### Primary merges (`data/03a_merge_primary/`)
 
@@ -1466,7 +1466,7 @@ station HUC-12s do:
 > Trailing-year nulls are expected where an input series ends short of 2025
 > (P4 chemical spending ends 2024).
 
-### Tertiary merge (`data/03c_merge_tertiary/`)
+### Tertiary merge (`data/final/`)
 
 #### T1 — `epa-full.csv` (48,251 × 318) — the terminal modeling table
 

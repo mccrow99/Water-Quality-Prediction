@@ -1,11 +1,12 @@
 # Model Outcomes
 
 Held-out test-set results for every water-quality model trained in
-`src/05_modeling/`. Generated 2026-08-11 from the executed notebooks.
+`src/05_modeling/`. Generated 2026-08-11 from the executed notebooks; the
+**Neural Network** family was added 2026-08-15.
 
 ## Setup (shared by all models)
 
-- **Dataset:** `data/03c_merge_tertiary/epa-full.csv` (48,251 rows × 318 columns)
+- **Dataset:** `data/final/epa-full.csv` (48,251 rows × 318 columns)
 - **Predictors:** 29 environmental / spatial / temporal features (location, PRISM
   climate, ISU weather, streamflow, soil, land cover, nutrient loading, plus
   day-of-year seasonality and observation year). Other water-quality `_value`
@@ -14,12 +15,17 @@ Held-out test-set results for every water-quality model trained in
   **`MonitoringLocationIdentifier`** — 20% of the *stations* that measured a
   target are held out whole, and none of their rows are seen in training.
 - **Preprocessing:** `SimpleImputer(median)` on every model; `StandardScaler`
-  added for linear regression only.
+  added for linear regression and the neural network. The neural network alone
+  also sets `add_indicator=True`, appending a was-missing flag for each of the
+  13 predictors that carry gaps — a tree can split around an imputed median,
+  a network cannot tell it apart from a genuine mid-range reading. The
+  expansion is internal to the pipeline, so all four families still take the
+  same 29 input columns.
 - **Targets:** **thirteen** — the twelve measured water-quality parameters plus
   **WQI**, the composite index built by `src/04_eda/wqi-calculation.ipynb`.
 - **Target transform:** chosen per (target, family) by a cross-validated
-  bake-off, not by hand. 11 of the 39 models are fitted on **`log10(y + c)`**;
-  the other 28 on raw values. See below.
+  bake-off, not by hand. 13 of the 52 models are fitted on **`log10(y + c)`**;
+  the other 39 on raw values. See below.
 - **Rows per target** vary because each target keeps only its own non-null,
   in-range measurements (see the `N test` column). The test *row* share drifts
   from 20% because station volume is heavy-tailed.
@@ -108,19 +114,40 @@ Nitrite / Gradient Boosting gave up **0.23 R²** for a 0.51% validation win.
 
 #### What it picked
 
-| | Linear Regression | Random Forest | Gradient Boosting |
-|---|:--|:--|:--|
-| *E. coli* | log10 | log10 | log10 |
-| Total Suspended Solids | log10 | log10 | log10 |
-| Turbidity | log10 | log10 | log10 |
-| Total Phosphorus | raw | log10 | log10 |
-| all nine others, incl. **WQI** | raw | raw | raw |
+| | Linear Regression | Random Forest | Gradient Boosting | Neural Network |
+|---|:--|:--|:--|:--|
+| *E. coli* | log10 | log10 | log10 | **raw** |
+| Total Suspended Solids | log10 | log10 | log10 | **raw** |
+| Turbidity | log10 | log10 | log10 | log10 |
+| Total Phosphorus | raw | log10 | log10 | log10 |
+| all nine others, incl. **WQI** | raw | raw | raw | raw |
 
 This reproduces the previously hand-picked set almost exactly, with one
 refinement it found on its own: **Total Phosphorus / Linear Regression stays
 raw**, because there the raw fit genuinely wins (CV MAE 0.186 vs 0.188). The
 per-family split is the point — the right scale is a property of the
 target *and* the estimator, not of the target alone.
+
+The neural network makes that point twice more. It is the only family that
+keeps *E. coli* and TSS on the raw scale, because on both the raw arm won the
+bake-off outright (CV MAE 2,511 vs 2,672 for *E. coli*; 98.8 vs 110.8 for TSS).
+Neither is a good model on either scale, and the choice should be read as "the
+log arm did not help this estimator", not as a claim that raw is right for these
+targets — the same rule, given the same data and a tree, reaches the opposite
+conclusion.
+
+**One bug found here is worth recording**, because it would silently corrupt any
+future family added to this bake-off. The network's own early stopping was first
+written to watch validation **MAE**, to match the arbiter used above. On a
+right-skewed raw target that is broken: squared-error training pulls predictions
+off the median toward the mean, so validation MAE rises from the first epoch
+while the fit is still improving. On raw-scale Turbidity it stopped at **epoch
+1** where an MSE criterion stops at 114. The consequence was not just one
+undertrained model — it fed the bake-off two equally untrained arms, which could
+not see the log arm's advantage and left Turbidity on the raw scale. The
+criterion *within* an arm must match the loss being descended (MSE); MAE remains
+the right arbiter *between* arms, where the two objectives differ and it is the
+only scale-neutral yardstick.
 
 Note that a transform being chosen does not make the model good. All four
 log-fitted targets remain the weakest in the set; the transform moves *E. coli*
@@ -136,8 +163,8 @@ The offsets are 1.5, 0.196, 0.140 and 0.0012.
 
 Back-transforming needs **Duan's (1983) smearing correction**: E[y] is not
 10^E[log₁₀ y], so naive exponentiation biases every prediction low. The factors
-run **1.07–1.77** for the tree families and 1.64–5.19 for linear regression,
-whose log-residuals are far wider.
+run **1.07–1.77** for the tree families, 1.43–1.69 for the neural network, and
+1.64–5.19 for linear regression, whose log-residuals are far wider.
 
 Both numbers are stored **inside each `.pkl`**, alongside the fitted pipeline
 and the feature list, so `app.py` cannot mislabel a `log10` prediction as mg/L
@@ -164,9 +191,10 @@ mL), which is a log-scale statistic.
 ### Metrics
 
 - **R²** — coefficient of determination on the test set (higher is better; 1.0 is perfect).
-- **R² (log)** — R² in `log10(y + c)` space, reported only for the four
-  log-fitted targets. For those four this is the headline number; the raw-scale
-  R² beside it is dominated by a handful of extreme readings.
+- **R² (log)** — R² in `log10(y + c)` space, reported only where that
+  (target, family) pair was fitted on the log. Where it is present it is the
+  headline number; the raw-scale R² beside it is dominated by a handful of
+  extreme readings.
 - **RMSE** — root mean squared error, in the target's own units (lower is better).
 - **MAE** — mean absolute error, in the target's own units.
 - **Error Rate** — symmetric mean absolute percentage error / sMAPE, as a percent.
@@ -186,10 +214,16 @@ mL), which is a log-scale statistic.
 Models compared: **Linear Regression**
 (`linear_regression/multiple_linear_regression.ipynb`), **Random Forest**
 (`random_forest/random_forest.ipynb`), **Gradient Boosting** —
-HistGradientBoostingRegressor (`gradient_boosting/gradient_boosting.ipynb`).
-Each notebook saves its 12 fitted pipelines as `<prefix>_<target>.pkl` into its
-own folder (`lr_*`, `rf_*`, `gb_*`) and writes its own rows of
-`model_metrics.csv`.
+HistGradientBoostingRegressor (`gradient_boosting/gradient_boosting.ipynb`) —
+and **Neural Network** — a `VotingRegressor` over three seeded `MLPRegressor`s
+(`neural_network/neural_network.ipynb`). Each notebook saves its 13 fitted
+pipelines as `<prefix>_<target>.pkl` into its own folder (`lr_*`, `rf_*`,
+`gb_*`, `nn_*`) and writes its own rows of `model_metrics.csv`.
+
+**`app.py` currently loads only the first three families (39 models).** The
+neural network is trained, saved and scored on the same terms as the others, but
+is not wired into the dashboard — on these results there is nothing it would
+add there.
 
 ---
 
@@ -215,19 +249,28 @@ own folder (`lr_*`, `rf_*`, `gb_*`) and writes its own rows of
 
 | Target | Scale | N test | N stations | R² | R² (log) | RMSE | MAE | Error Rate (%) | Persistence R² | Margin |
 |---|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| Water Temperature | raw | 6,092 | 200 | 0.9466 | — | 2.0367 | 1.5004 | 21.19 | 0.640 | +0.309 |
-| Specific Conductance | raw | 4,617 | 97 | 0.6545 | — | 119.3700 | 81.7043 | 16.00 | 0.856 | -0.201 |
-| Total Dissolved Solids | raw | 3,902 | 117 | 0.5329 | — | 85.9466 | 66.9173 | 21.30 | 0.811 | -0.277 |
-| Nitrate + Nitrite | raw | 1,045 | 74 | 0.5047 | — | 3.1810 | 2.2072 | 64.87 | 0.190 | +0.276 |
-| Dissolved Oxygen | raw | 6,640 | 182 | 0.4910 | — | 1.9166 | 1.2894 | 15.44 | 0.325 | +0.175 |
-| Nitrate | raw | 2,719 | 56 | 0.4593 | — | 4.2114 | 2.5166 | 102.50 | 0.398 | +0.058 |
-| pH | raw | 5,673 | 222 | 0.4115 | — | 0.4860 | 0.3483 | 4.43 | -0.060 | +0.476 |
-| WQI | raw | 4,622 | 189 | 0.3367 | — | 13.9718 | 11.2770 | 28.05 | 0.172 | +0.168 |
-| E. coli | log10 | 3,831 | 87 | 0.0526 | **0.3550** | 9,816.1469 | 1,387.3184 | 92.69 | -0.741 | +0.793 |
-| Total Suspended Solids | log10 | 2,435 | 111 | 0.0254 | **0.3666** | 205.9108 | 44.8811 | 70.84 | -0.993 | +1.036 |
-| Turbidity | log10 | 3,581 | 169 | 0.0184 | **0.3302** | 86.7582 | 22.3671 | 68.75 | -0.788 | +0.805 |
-| Nitrite | raw | 2,271 | 46 | 0.0026 | — | 0.1223 | 0.0419 | 175.18 | -0.690 | +0.694 |
-| Total Phosphorus | log10 | 1,294 | 91 | -0.0126 | **0.1748** | 0.4798 | 0.1782 | 60.43 | 0.319 | -0.335 |
+| Water Temperature | raw | 6,092 | 200 | 0.9377 | — | 2.1995 | 1.6476 | 22.52 | 0.640 | +0.300 |
+| Specific Conductance | raw | 4,617 | 97 | 0.5460 | — | 136.8345 | 87.2843 | 16.94 | 0.856 | -0.306 |
+| Total Dissolved Solids | raw | 3,902 | 117 | 0.5334 | — | 85.9018 | 66.7102 | 21.32 | 0.811 | -0.276 |
+| Dissolved Oxygen | raw | 6,640 | 182 | 0.4765 | — | 1.9437 | 1.3224 | 15.74 | 0.325 | +0.162 |
+| Nitrate | raw | 2,719 | 56 | 0.4545 | — | 4.2298 | 2.5346 | 102.69 | 0.398 | +0.056 |
+| Nitrate + Nitrite | raw | 1,045 | 74 | 0.4421 | — | 3.3763 | 2.3818 | 68.13 | 0.190 | +0.216 |
+| pH | raw | 5,673 | 222 | 0.3751 | — | 0.5008 | 0.3613 | 4.59 | -0.060 | +0.440 |
+| WQI | raw | 4,622 | 189 | 0.2880 | — | 14.4750 | 11.8490 | 29.36 | 0.172 | +0.121 |
+| E. coli | log10 | 3,831 | 87 | 0.0777 | **0.3462** | 9,685.3567 | 1,476.1734 | 101.91 | -0.741 | +0.818 |
+| Turbidity | log10 | 3,581 | 169 | 0.0274 | **0.2963** | 86.3598 | 23.0101 | 72.99 | -0.788 | +0.815 |
+| Total Suspended Solids | log10 | 2,435 | 111 | 0.0243 | **0.3475** | 206.0231 | 45.6638 | 75.90 | -0.993 | +1.034 |
+| Nitrite | raw | 2,271 | 46 | 0.0110 | — | 0.1218 | 0.0395 | 177.77 | -0.690 | +0.701 |
+| Total Phosphorus | log10 | 1,294 | 91 | 0.0007 | **0.1782** | 0.4767 | 0.1765 | 59.99 | 0.319 | -0.309 |
+
+These forests are deliberately **capped at 100 trees with `min_samples_leaf=10`**.
+Grown out (300 trees, leaf floor 2) they scored a mean 0.018 R² higher, but cost
+1.8 GB across the 13 targets — too large to push to GitHub and far past the
+memory of the 512 MB instance the dashboard is deployed on. The capped forests
+total 130 MB. Two targets paid most of that: Specific Conductance (0.6545 →
+0.5460) and Nitrate + Nitrite (0.5047 → 0.4421); five others moved by less than
+0.01, and four log-fitted targets improved slightly. See "Model size and the
+deployment ceiling" below.
 
 ## Gradient Boosting (HistGradientBoostingRegressor)
 
@@ -247,45 +290,181 @@ own folder (`lr_*`, `rf_*`, `gb_*`) and writes its own rows of
 | Total Phosphorus | log10 | 1,294 | 91 | 0.0375 | **0.1891** | 0.4678 | 0.1739 | 59.09 | 0.319 | -0.255 |
 | Nitrite | raw | 2,271 | 46 | -0.1453 | — | 0.1311 | 0.0470 | 180.42 | -0.690 | +0.546 |
 
+## Neural Network (MLP)
+
+`SimpleImputer(median, add_indicator=True)` → `StandardScaler` →
+`VotingRegressor` averaging three `MLPRegressor(hidden_layer_sizes=(128, 64),
+alpha=1e-3, adam, lr=1e-3)` that differ only by seed.
+
+| Target | Scale | N test | N stations | R² | R² (log) | RMSE | MAE | Error Rate (%) | Persistence R² | Margin | Epochs |
+|---|:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
+| Water Temperature | raw | 6,092 | 200 | 0.9207 | — | 2.4827 | 1.8637 | 25.79 | 0.640 | +0.283 | 24 |
+| Dissolved Oxygen | raw | 6,640 | 182 | 0.4520 | — | 1.9885 | 1.4163 | 16.68 | 0.325 | +0.139 | 10 |
+| Total Dissolved Solids | raw | 3,902 | 117 | 0.4249 | — | 95.3661 | 75.8143 | 24.68 | 0.811 | -0.387 | 40 |
+| Nitrate + Nitrite | raw | 1,045 | 74 | 0.3261 | — | 3.7106 | 2.6391 | 74.99 | 0.190 | +0.096 | 32 |
+| Nitrate | raw | 2,719 | 56 | 0.2382 | — | 4.9987 | 3.1630 | 111.05 | 0.398 | -0.164 | 9 |
+| pH | raw | 5,673 | 222 | 0.1621 | — | 0.5799 | 0.4372 | 5.55 | -0.060 | +0.226 | 14 |
+| WQI | raw | 4,622 | 189 | 0.1056 | — | 16.2235 | 13.2849 | 32.52 | 0.172 | -0.062 | 15 |
+| Total Suspended Solids | raw | 2,435 | 111 | 0.0652 | — | 201.6583 | 72.7495 | 104.97 | -0.993 | +1.045 | 18 |
+| Turbidity | log10 | 3,581 | 169 | 0.0575 | **0.2245** | 85.0123 | 26.1877 | 79.79 | -0.788 | +0.847 | 8 |
+| E. coli | raw | 3,831 | 87 | 0.0256 | — | 9,954.7329 | 2,273.3008 | 132.17 | -0.741 | +0.767 | 300\* |
+| Specific Conductance | raw | 4,617 | 97 | 0.0203 | — | 201.0129 | 134.1641 | 26.08 | 0.856 | -0.844 | 13 |
+| Total Phosphorus | log10 | 1,294 | 91 | 0.0202 | **0.0987** | 0.4720 | 0.1875 | 63.90 | 0.319 | -0.303 | 5 |
+| Nitrite | raw | 2,271 | 46 | -0.1864 | — | 0.1334 | 0.0564 | 186.91 | -0.690 | +0.514 | 25 |
+
+\* *E. coli* hit the 300-epoch ceiling: validation MSE was still falling when the
+search ran out of room, so that budget is a truncation rather than a chosen
+optimum. It is the only target where this happened.
+
+### How the epoch budget is chosen
+
+`MLPRegressor(early_stopping=True)` validates on a **random row split**, which
+puts the same station on both sides and hands the network exactly the leakage
+`GroupShuffleSplit` exists to remove — it would stop at whatever epoch best
+memorises the training stations. The notebook replaces it with a `warm_start`
+loop against a **station-grouped** inner split (15% of training stations),
+stopping after 25 epochs without a validation-MSE improvement.
+
+The budgets it returns are short — 5 to 40 epochs — and that is the correct
+answer, not undertraining. On Water Temperature the search stops at epoch 24,
+where the test R² is 0.9168; the best test R² achievable at *any* epoch up to
+300 is 0.9171. The search is finding the optimum and the optimum is 0.92.
+
+(`PATIENCE` was 15 in a first run and is too impatient on the small targets:
+Nitrate + Nitrite has ~540 inner-validation rows and a flat, noisy curve between
+epochs 5 and 32, so a patience of 15 latched onto the first dip and returned a
+4-epoch network. 25 fixes it. The learning rate was deliberately *not* tuned —
+by that point test scores had been seen, and selecting on them is the leakage
+this whole page is built to avoid.)
+
+### Seed stability
+
+Per-seed test R² of the three ensemble members, on the identical test rows. This
+is the number to check before believing any ranking involving this family.
+
+| Target | Min | Max | SD | **Spread** | Ensemble |
+|---|--:|--:|--:|--:|--:|
+| Nitrite | -1.3732 | -0.1871 | 0.6117 | **1.1862** | -0.1864 |
+| Turbidity | -0.0349 | 0.0548 | 0.0461 | **0.0897** | 0.0575 |
+| pH | 0.0626 | 0.1356 | 0.0399 | **0.0730** | 0.1621 |
+| Total Phosphorus | -0.0692 | 0.0021 | 0.0390 | **0.0713** | 0.0202 |
+| Nitrate | 0.2015 | 0.2727 | 0.0375 | **0.0713** | 0.2382 |
+| Nitrate + Nitrite | 0.2832 | 0.3293 | 0.0239 | **0.0460** | 0.3261 |
+| Specific Conductance | -0.0016 | 0.0349 | 0.0182 | **0.0364** | 0.0203 |
+| WQI | 0.0854 | 0.1162 | 0.0154 | **0.0308** | 0.1056 |
+| Dissolved Oxygen | 0.4249 | 0.4551 | 0.0155 | **0.0302** | 0.4520 |
+| Total Dissolved Solids | 0.4081 | 0.4280 | 0.0104 | **0.0199** | 0.4249 |
+| Total Suspended Solids | 0.0582 | 0.0698 | 0.0058 | **0.0116** | 0.0652 |
+| E. coli | 0.0168 | 0.0263 | 0.0054 | **0.0095** | 0.0256 |
+| Water Temperature | 0.9124 | 0.9185 | 0.0032 | **0.0061** | 0.9207 |
+
+Two things follow.
+
+**Averaging the seeds is worth +0.054 R² on average** over a single network —
+the ensemble beats its own mean member on every target, and on pH it beats the
+*best* member (0.162 vs 0.136). That is free variance reduction, and it is why
+the shipped artifact is a `VotingRegressor` rather than one network.
+
+**The spread is large enough to swallow most of this family's margins.** On
+Nitrite three identical networks land between −1.37 and −0.19; the target is 85%
+zeros and the fit is essentially arbitrary. Turbidity's spread (0.090) is more
+than four times its margin over gradient boosting (0.020) — so its one nominal
+win below is a tie, not a win. No other family on this page reports this number,
+and none needs to as badly: random forest's seed-to-seed variation is an order
+of magnitude smaller.
+
 ---
 
 ## Cross-model comparison (test R², unseen stations)
 
 Best model per target in **bold**.
 
-| Target | N test | N stations | Linear | Random Forest | Gradient Boosting | Best |
-|---|--:|--:|--:|--:|--:|:--|
-| Water Temperature | 6,092 | 200 | 0.8947 | **0.9466** | 0.9402 | Random Forest |
-| Specific Conductance | 4,617 | 97 | 0.2195 | **0.6545** | 0.2619 | Random Forest |
-| Total Dissolved Solids | 3,902 | 117 | 0.4211 | **0.5329** | 0.4324 | Random Forest |
-| Nitrate + Nitrite | 1,045 | 74 | 0.2176 | 0.5047 | **0.5150** | Gradient Boosting |
-| Dissolved Oxygen | 6,640 | 182 | 0.3877 | **0.4910** | 0.4670 | Random Forest |
-| Nitrate | 2,719 | 56 | 0.1719 | **0.4593** | 0.3925 | Random Forest |
-| pH | 5,673 | 222 | 0.1707 | **0.4115** | 0.3493 | Random Forest |
-| WQI | 4,622 | 189 | 0.0763 | **0.3367** | 0.2778 | Random Forest |
-| Total Suspended Solids | 2,435 | 111 | -0.0255\* | 0.0254\* | **0.0664\*** | Gradient Boosting |
-| E. coli | 3,831 | 87 | 0.0254\* | 0.0526\* | **0.0629\*** | Gradient Boosting |
-| Turbidity | 3,581 | 169 | -0.0145\* | 0.0184\* | **0.0377\*** | Gradient Boosting |
-| Total Phosphorus | 1,294 | 91 | 0.0228 | -0.0126\* | **0.0375\*** | Gradient Boosting |
-| Nitrite | 2,271 | 46 | -0.0033 | **0.0026** | -0.1453 | Random Forest |
+| Target | N test | N stations | Linear | Random Forest | Gradient Boosting | Neural Net | Best |
+|---|--:|--:|--:|--:|--:|--:|:--|
+| Water Temperature | 6,092 | 200 | 0.8947 | 0.9377 | **0.9402** | 0.9207 | Gradient Boosting |
+| Specific Conductance | 4,617 | 97 | 0.2195 | **0.5460** | 0.2619 | 0.0203 | Random Forest |
+| Total Dissolved Solids | 3,902 | 117 | 0.4211 | **0.5334** | 0.4324 | 0.4249 | Random Forest |
+| Nitrate + Nitrite | 1,045 | 74 | 0.2176 | 0.4421 | **0.5150** | 0.3261 | Gradient Boosting |
+| Dissolved Oxygen | 6,640 | 182 | 0.3877 | **0.4765** | 0.4670 | 0.4520 | Random Forest |
+| Nitrate | 2,719 | 56 | 0.1719 | **0.4545** | 0.3925 | 0.2382 | Random Forest |
+| pH | 5,673 | 222 | 0.1707 | **0.3751** | 0.3493 | 0.1621 | Random Forest |
+| WQI | 4,622 | 189 | 0.0763 | **0.2880** | 0.2778 | 0.1056 | Random Forest |
+| Total Suspended Solids | 2,435 | 111 | -0.0255\* | 0.0243\* | **0.0664\*** | 0.0652 | Gradient Boosting |
+| E. coli | 3,831 | 87 | 0.0254\* | **0.0777\*** | 0.0629\* | 0.0256 | Random Forest \* |
+| Turbidity | 3,581 | 169 | -0.0145\* | 0.0274\* | 0.0377\* | **0.0575\*** | Neural Net † |
+| Total Phosphorus | 1,294 | 91 | 0.0228 | 0.0007\* | **0.0375\*** | 0.0202\* | Gradient Boosting |
+| Nitrite | 2,271 | 46 | -0.0033 | **0.0110** | -0.1453 | -0.1864 | Random Forest |
 
 \* fitted on `log10(y + c)`. **The raw-scale R² above is not the number to read
-for these four** — it is the score of a log fit measured on the scale it was
+for these** — it is the score of a log fit measured on the scale it was
 deliberately not optimised for, and is set by a handful of extreme readings.
 Their real comparison is the log scale:
 
-| Target | Linear | Random Forest | Gradient Boosting | Best |
-|---|--:|--:|--:|:--|
-| Total Suspended Solids | 0.1509 | **0.3666** | 0.3378 | Random Forest |
-| E. coli | 0.2043 | 0.3550 | **0.3580** | Gradient Boosting |
-| Turbidity | 0.0618 | **0.3302** | 0.2832 | Random Forest |
-| Total Phosphorus | — (raw) | 0.1748 | **0.1891** | Gradient Boosting |
+| Target | Linear | Random Forest | Gradient Boosting | Neural Net | Best |
+|---|--:|--:|--:|--:|:--|
+| Total Suspended Solids | 0.1509 | **0.3475** | 0.3378 | — (raw) | Random Forest |
+| E. coli | 0.2043 | 0.3462 | **0.3580** | — (raw) | Gradient Boosting |
+| Turbidity | 0.0618 | **0.2963** | 0.2832 | 0.2245 | Random Forest |
+| Total Phosphorus | — (raw) | 0.1782 | **0.1891** | 0.0987 | Gradient Boosting |
+
+† **The neural network's one win does not survive being read on the right
+scale.** Turbidity is log-fitted in all four families, so the comparison that
+counts is the log row above — where the network's 0.2245 is last of the three
+log fits and random forest leads at 0.2963. Its raw-scale lead is an artifact of
+the same extreme-tail sensitivity the footnote warns about. And even taken at
+face value, +0.020 over gradient boosting sits inside the network's own 0.090
+seed spread. **The correct summary is that the MLP wins nothing.**
 
 On the scale it is fitted on, this block goes from "explains essentially
 nothing" (R² 0.00–0.12, three of twelve family-target pairs *negative*) to
 "explains a fifth to a third of the variance at stations it has never seen".
 That is not a large model, but it is the first time these four have been worth
 reporting at all.
+
+### Where the neural network loses, and why
+
+Beaten on **13 of 13** targets once Turbidity is read on its own scale. Mean
+raw-scale R² across the twelve original targets is **0.2105** — statistically
+indistinguishable from linear regression's 0.2073, and far behind random
+forest's 0.3406.
+
+The losses are not uniform, and their shape is the finding:
+
+| | NN − RF | What the target looks like |
+|---|--:|:--|
+| Specific Conductance | **-0.634** | persistence R² 0.856 — almost pure station identity |
+| pH | -0.249 | persistence R² −0.06, but RF gets 0.41 from sharp local structure |
+| WQI | -0.231 | composite; RF 0.337 |
+| Nitrate | -0.221 | 222 training stations, 38% zeros |
+| Nitrate + Nitrite | -0.179 | 3,614 training rows |
+| Total Dissolved Solids | -0.108 | station-dominated, but with a real gradient |
+| Dissolved Oxygen | -0.039 | partly the same mechanism |
+| Water Temperature | -0.026 | smooth physical mechanism (ρ = +0.85 with `prism_tmin_c`) |
+
+The gap is widest exactly where a tree can cut sharply on latitude and longitude
+and recover a site-specific level, and narrowest where the target has a smooth
+physical driver in the feature set. An MLP fits a smooth global function of 29
+inputs; a step change in alkalinity across a county line is the worst possible
+thing to ask it for, and Specific Conductance is that target. Water Temperature
+— the one target with a genuine continuous mechanism — is the one it very nearly
+matches.
+
+This is the expected result for tabular data at this scale, and the point of
+running it was to have measured rather than assumed it. **It is also not a
+capacity problem**: the epoch searches land on their true optima, and widening
+the network cannot manufacture signal that the 29 features do not carry. The
+binding constraint is the same one every family on this page runs into.
+
+What a plain `MLPRegressor` *cannot* do is the thing that would most justify a
+network here: **share a representation across targets.** 36,696 rows carry two
+or more measured targets and 32,699 carry four or more, and the targets are
+physically coupled (TDS ↔ specific conductance, TSS ↔ turbidity, the nitrogen
+series). A shared-trunk network with one head per target and a masked loss would
+let the 3,614-row Nitrate + Nitrite head borrow from the 28,613-row Water
+Temperature rows — which no tree family can do at all, since each of the 39
+tree/linear models sees only its own target's rows. `MLPRegressor` fits one
+target at a time, so that experiment needs a different tool. This family is the
+baseline it would have to beat.
 
 ## WQI — the composite index
 
@@ -297,8 +476,9 @@ from `FEATURE_COLS`.
 
 | Model | Scale | R² | RMSE | MAE | sMAPE (%) | Persistence R² | Margin |
 |---|:--|--:|--:|--:|--:|--:|--:|
-| **Random Forest** | raw | **0.3367** | 13.9718 | 11.2770 | 28.05 | 0.172 | **+0.168** |
+| **Random Forest** | raw | **0.2880** | 14.4750 | 11.8490 | 29.36 | 0.172 | **+0.121** |
 | Gradient Boosting | raw | 0.2778 | 14.5790 | 11.7870 | 29.25 | 0.172 | +0.108 |
+| Neural Network | raw | 0.1056 | 16.2235 | 13.2849 | 32.52 | 0.172 | −0.062 |
 | Linear Regression | raw | 0.0763 | 16.4872 | 13.6658 | 33.18 | 0.172 | −0.091 |
 
 Scored on 4,622 rows from **189 unseen stations** (27,298 rows / 943 stations
@@ -309,12 +489,13 @@ Three things worth stating plainly:
 - **It lands mid-table, and it beats its baseline.** Random forest's 0.337 sits
   between pH (0.412) and the skewed block, and clears persistence by +0.168 —
   which is a more meaningful margin than most, because persistence on WQI is a
-  functioning baseline (0.172) rather than a broken one. Linear regression does
-  *not* clear it.
+  functioning baseline (0.172) rather than a broken one. Neither linear
+  regression nor the neural network clears it.
 - **The bake-off left it raw, as expected.** WQI's skew is −0.10 — it is the
-  most symmetric target in the set — and the log arm lost on all three families
-  (CV MAE 13.44 vs 13.25, 12.11 vs 11.85, 12.26 vs 11.94). It is a useful check
-  that the selection rule is not simply reaching for the transform.
+  most symmetric target in the set — and the log arm lost on all four families
+  (CV MAE 13.44 vs 13.25, 12.11 vs 11.85, 12.26 vs 11.94, 16.45 vs 12.94). It is
+  a useful check that the selection rule is not simply reaching for the
+  transform.
 - **About a tenth of it is sampling design, not water quality.** `WQI_n_groups`
   — how many of the eight pollution groups a sample actually measured — explains
   **9.7%** of WQI's variance on its own (Spearman 0.25), and mean WQI climbs
@@ -337,6 +518,13 @@ regression in the model. Their gain is on the log scale, in the table above.
 **−`pct_row_crops`** = grouped split with the redundant column dropped (29
 features); **now** = the four skewed targets additionally fitted on
 `log10(y + c)`.
+
+This table is a **frozen record of those three changes**, so its random-forest
+rows are the pre-cap forests (300 trees, leaf floor 2) that were current when it
+was written. They no longer match the shipped models — the leaf floor was raised
+afterwards, for size rather than accuracy. Read the current numbers from the
+sections above; read this table only for the effect of the split, the dropped
+feature and the transform, each of which is unaffected by the cap.
 
 | Target | Best model | leaky | grouped | −`pct_row_crops` | now | split cost | feature cost | log cost (raw scale) |
 |---|:--|--:|--:|--:|--:|--:|--:|--:|
@@ -362,8 +550,13 @@ nothing to compare it to:
 | Linear Regression | 0.2485 | 0.2157 | 0.2157 | 0.2073 | -0.033 | +0.000 | -0.008 |
 | Random Forest | 0.5381 | 0.3463 | 0.3490 | 0.3406 | -0.192 | +0.003 | -0.008 |
 | Gradient Boosting | 0.5465 | 0.2652 | 0.2640 | 0.2848 | -0.281 | -0.001 | +0.021 |
+| Neural Network | — | — | — | 0.2105 | — | — | — |
 
-Including WQI, the thirteen-target means are 0.1973 / 0.3403 / 0.2843.
+The neural network has no earlier-split history — it was added after all three
+changes — so only its current column is meaningful. It arrives at **0.2105**,
+which is linear regression's number (0.2073) to within noise.
+
+Including WQI, the thirteen-target means are 0.1973 / 0.3403 / 0.2843 / 0.2025.
 
 **Essentially all of the movement is still the split.** Dropping
 `pct_row_crops` shifts the family means by at most 0.003 R², and the log
@@ -397,6 +590,14 @@ reading is a better forecast than the model, and the correct next step is to
 hand the model that reading explicitly as a `y_prev` / `days_since_prev` feature
 rather than leaving it to be approximated from coordinates.
 
+The table above uses the best model per target, all of which are tree families.
+**The neural network clears persistence on only 8 of 13**, failing on Nitrate
+(−0.164) and WQI (−0.062) in addition to the three above. Both are targets where
+random forest clears the bar comfortably (+0.058 and +0.168), so those two
+failures are a property of this estimator rather than of the data — which makes
+the `y_prev` feature no less necessary, but does mean the MLP needs it on more
+targets than anything else on this page.
+
 ### The log-fitted four, on the scale they are fitted on
 
 The raw-scale margins above are close to meaningless for the four starred
@@ -425,6 +626,48 @@ reaches 0.377 on the log scale against the best model's 0.189, so a site's last
 reading remains the better forecast. It joins Specific Conductance and TDS on
 the list of targets waiting for `y_prev`.
 
+## Model size and the deployment ceiling
+
+A model that cannot be shipped is not a result. The random forests were
+originally grown without a leaf floor (`min_samples_leaf=2`, `max_depth=None`,
+300 trees), which on ~35k training rows produced about **12,000 nodes per tree
+and 4.0 million nodes per forest** — 286 MB for `rf_water_temperature.pkl` alone
+and **1.8 GB across the 13 targets**. That is not a modelling quantity; it is
+the training set stored in tree form.
+
+It failed twice over. Individual files exceeded GitHub's 100 MB per-file hard
+limit, so the models could not be pushed at all, and even compressed (gzip gets
+a forest down about 3.9×) the app still has to hold every pickle in memory at
+startup — 1.9 GB against a 512 MB instance. Compression cannot fix the second
+problem, because decompression makes the peak worse rather than better.
+
+Capping at **100 trees with `min_samples_leaf=10`** cuts a forest ~14× for a
+mean R² cost of 0.018:
+
+| | before | after |
+|---|--:|--:|
+| Nodes per forest (Water Temperature) | 3,976,320 | 249,996 |
+| Largest single `.pkl` | 286 MB | 17 MB |
+| All 13 random forests | 1.8 GB | 130 MB |
+| All 52 models, four families | 1.9 GB | 165 MB |
+
+The tree count is nearly free — dropping 300 → 100 barely moves the score — so
+the leaf floor is doing essentially all of the compression. The cost is not
+spread evenly: Specific Conductance gives up 0.109 R² and Nitrate + Nitrite
+0.063, while seven targets move by less than 0.015 and four log-fitted targets
+come out marginally ahead. Specific Conductance was already the clearest failure
+against persistence (−0.31 margin), so the target that paid most was the one
+whose score was least trustworthy to begin with.
+
+One verdict changed: **Water Temperature's best model is now gradient boosting**
+(0.9402 vs the capped forest's 0.9377), where it was random forest at 0.9466.
+
+Two consequences worth keeping in view. Deployment is now a real constraint on
+hyperparameters, not an afterthought — anything that regrows the forests
+reintroduces the failure. And a fully-grown forest on this feature set was
+memorizing rows it should not have needed: the score it bought was, on nine of
+thirteen targets, worth less than 0.015 R².
+
 ## Takeaways
 
 - **The scores fell, and that is the point.** Mean raw-scale R² dropped from
@@ -446,6 +689,16 @@ the list of targets waiting for `y_prev`.
   It is the one target with a real physical mechanism in the feature set
   (ρ = +0.85 with `prism_tmin_c`, both between *and* within station), and it
   beats persistence by 0.31.
+- **A neural network was tried and does not help.** A three-seed MLP ensemble,
+  trained on the same split with the same transform bake-off, is **beaten on all
+  13 targets** and lands at a 12-target mean R² of 0.2105 — linear regression's
+  0.2073 to within noise, against random forest's 0.3406. The losses concentrate
+  where a tree can cut sharply on coordinates and recall a site's level
+  (Specific Conductance 0.655 → 0.020) and nearly vanish where the target has a
+  smooth physical driver (Water Temperature 0.947 → 0.921). This is the expected
+  outcome for tabular data at this scale; it is worth having measured. See the
+  Neural Network section for why it is not a capacity problem, and for the
+  multi-task architecture that would be the real test of a network here.
 - **The leaderboard is split by target type.** Random forest wins 8 of the 9
   raw-scale targets (WQI included, at 0.337); gradient boosting wins all four
   log-fitted ones on the raw scale and two of four on the log scale. Boosting's early stopping
@@ -459,6 +712,12 @@ the list of targets waiting for `y_prev`.
   gap narrowed from 0.30
   to 0.13 R². Most of
   the trees' old advantage was their superior ability to memorise a station.
+- **Seed variance is large enough to decide rankings, and only one family
+  reports it.** Three MLPs differing only by initialisation span 0.09 R² on
+  Turbidity and 1.19 on Nitrite. Averaging three seeds is worth +0.054 R² on
+  average — free, and the reason the shipped artifact is a `VotingRegressor`.
+  Any single-seed number on a test set of 1,000-odd rows should be read as an
+  interval, not a point.
 - **Nine of thirteen targets still sit below R² = 0.5 for every family.** On
   unseen stations the current 29-feature design predicts water temperature well,
   dissolved oxygen / pH / the nitrate group / WQI moderately, and the skewed
@@ -512,8 +771,13 @@ source venv/bin/activate
 jupyter nbconvert --to notebook --execute --inplace src/05_modeling/linear_regression/multiple_linear_regression.ipynb
 jupyter nbconvert --to notebook --execute --inplace src/05_modeling/random_forest/random_forest.ipynb
 jupyter nbconvert --to notebook --execute --inplace src/05_modeling/gradient_boosting/gradient_boosting.ipynb
+jupyter nbconvert --to notebook --execute --inplace src/05_modeling/neural_network/neural_network.ipynb
 ```
 
-Each notebook rewrites its own 12 `.pkl` files and its own rows of
-`src/05_modeling/model_metrics.csv`; the other two families' rows are left
+Each notebook rewrites its own 13 `.pkl` files and its own rows of
+`src/05_modeling/model_metrics.csv`; the other three families' rows are left
 untouched, so the notebooks may be run in any order.
+
+The first three run in well under a minute each. The neural network takes about
+**two minutes**: the transform bake-off fits both arms across three folds, and
+each of those fits runs its own epoch search.
