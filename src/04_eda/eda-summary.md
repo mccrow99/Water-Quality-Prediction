@@ -10,7 +10,10 @@ Consolidated findings from the three exploratory notebooks in `src/04_eda/`:
 
 **Input:** `data/final/epa-full.csv` — 48,251 rows × 315 columns, 1,345 monitoring
 stations, 555 HUC-12 watersheds, all 99 Iowa counties, 21 organizations, 2015-01-02 → 2025-12-25.
-Supporting tables are in `src/04_eda/outputs/` (`bv_` = bivariate, `mv_` = multivariate).
+Supporting tables are in `src/04_eda/outputs/` (`bv_` = bivariate, `mv_` = multivariate,
+`pi_` = permutation importance). §1.12 is a later addition and does not come from the
+notebooks: it is produced by [`block_permutation_importance.py`](block_permutation_importance.py),
+which scores the *trained* models on the grouped split adopted after this EDA was written.
 
 ---
 
@@ -184,6 +187,105 @@ of the site.
 The median station has another within **1.3 km**, but the median pixel of the interpolated map
 surface is **8.7 km** from the nearest station, the 95th percentile is **43 km**, and **15% of the
 rendered map is more than 20 km from any observation**.
+
+### 1.12 Which predictors carry the signal the models actually found
+
+**Added after the notebooks, on the grouped split.** Sections 1.5–1.7 characterise the input space
+as it sits in the table; this one asks the complementary question — of the skill the deployed models
+do have, which predictors supply it — and answers it on **held-out stations**, so the answer cannot
+be station recall. It is produced by
+[`block_permutation_importance.py`](block_permutation_importance.py), which re-reads the committed
+random forest and gradient boosting `.pkl` files (nothing is re-fitted), rebuilds each target's
+`GroupShuffleSplit(test_size=0.2, random_state=42)` test stations, and scores the R² lost when a
+block of predictors is shuffled. Base R² reproduces `src/05_modeling/model_metrics.csv`, which is
+the check that the split was rebuilt correctly.
+
+**Correlated columns are permuted as a block, under one shared row order.** Section 1.7 is the
+reason: the five temperature columns are one fact (`prism_tmin_c` ↔ `isu_min_feel_c` at ρ = 0.955)
+and the four nutrient columns span about two dimensions. Shuffled one at a time they *all* look
+unimportant, because the model simply reads the survivors. Shuffling the block together destroys the
+block's relation to the target while preserving the relations within it.
+
+Mean R² drop over the 25 (target × family) fits with base R² > 0.05, both families pooled. Repeat-
+to-repeat SD is **0.003**, so anything below ~0.01 is noise.
+
+| Block | mean R² drop | mean share of base R² | largest single drop |
+|---|---|---|---|
+| `air temperature` | 0.159 | 32% | 0.90 (Water Temperature) |
+| `location (lat/lon)` | 0.158 | 47% | 0.65 (Total Dissolved Solids) |
+| `season (day-of-year)` | 0.123 | 29% | 0.32 (Nitrate + Nitrite) |
+| `nutrient budget` | 0.098 | 25% | 0.35 (Nitrate) |
+| `land cover` | 0.072 | 20% | 0.25 (Specific Conductance) |
+| `network geometry` | 0.038 | 13% | 0.12 (Turbidity) |
+| `year` | 0.032 | 9% | 0.18 (Nitrate + Nitrite) |
+| `precip + humidity` | 0.028 | 8% | 0.17 (E. coli) |
+| `soil` | 0.021 | 4% | 0.21 (Specific Conductance) |
+| `streamflow` | 0.020 | 7% | 0.10 (Specific Conductance) |
+| `wind` | 0.004 | 1% | 0.01 (Dissolved Oxygen) |
+| `snow` | 0.000 | 0% | 0.00 (pH) |
+
+Per target (random forest; the last column says whether gradient boosting picks the same top block):
+
+| Target | base R² | top block | second | GB agrees |
+|---|---|---|---|---|
+| Water Temperature | 0.939 | `air temperature` 0.90 | `season` 0.21 | yes |
+| Dissolved Oxygen | 0.476 | `air temperature` 0.35 | `nutrient budget` 0.17 | yes |
+| pH | 0.379 | `air temperature` 0.21 | `nutrient budget` 0.17 | yes |
+| Nitrate | 0.455 | `nutrient budget` 0.32 | `land cover` 0.15 | yes |
+| Nitrite | 0.011 | `air temperature` 0.05 | `network geometry` 0.03 | yes |
+| Nitrate + Nitrite | 0.442 | `season` 0.24 | `nutrient budget` 0.13 | yes |
+| Total Phosphorus | 0.178 | `location (lat/lon)` 0.11 | `network geometry` 0.07 | yes |
+| Specific Conductance | 0.546 | `location (lat/lon)` 0.30 | `land cover` 0.25 | yes |
+| Total Dissolved Solids | 0.533 | `location (lat/lon)` 0.30 | `nutrient budget` 0.18 | yes |
+| Total Suspended Solids | 0.347 | `location (lat/lon)` 0.17 | `air temperature` 0.12 | yes |
+| Turbidity | 0.296 | `air temperature` 0.08 | `location (lat/lon)` 0.07 | no — `location` |
+| E. coli | 0.346 | `precip + humidity` 0.13 | `air temperature` 0.09 | yes |
+| WQI | 0.288 | `land cover` 0.15 | `air temperature` 0.12 | no — `location` |
+
+Four readings, each of which the earlier sections predict:
+
+**Air temperature is the only block that is a mechanism rather than a proxy.** It is the largest
+mean drop, and it is the one high-|ρ| relationship that survives the between/within split (§1.5:
+Water Temperature ← `prism_tmin_c` is 0.809 between stations and **0.868 within** one). It carries
+Dissolved Oxygen and pH too. Note the caveat in red flag 15 — `season` takes a further 0.21 off
+Water Temperature on top of it, so part of what looks thermal is the calendar.
+
+**Location is second, and it is not a predictor.** `LongitudeMeasure` alone is the largest
+*single*-column drop in the whole run (mean 0.116, more than double `LatitudeMeasure`), on a column
+whose correlation with Specific Conductance is **ρ = 0.0007** while its conditional median runs
+327 → 703 µS/cm (§1.6). This is red flags 1–2 measured directly: on the three targets where
+`location` is the top block — Specific Conductance, TDS, Total Phosphorus — the models also fail to
+beat the persistence baseline, so nearly half of their measured skill is a station-level mean
+recovered from coordinates.
+
+**Agriculture is the strongest non-thermal signal and is entirely cross-sectional.** `nutrient
+budget` and `land cover` are 4th and 5th, and dominate Nitrate. But §1.5 already showed
+`pct_corn` → Nitrate is **+0.714 between stations and −0.001 within** one, and §1.6 that it is a
+cliff rather than a slope (conditional median 0 mg/L across the bottom four deciles of corn share,
+10 mg/L in the top one). The permutation drop is real; it just means *this site is in corn country*,
+not *this site's nitrate responds to corn*.
+
+**Streamflow is the block this ranking undersells.** It places 10th of 12 here, and mean |ρ| is only
+0.148 — yet it is the sole block where the within-station correlation *exceeds* the between-station
+one (§1.5: 0.28 vs 0.14), reaching **+0.557** within station for Nitrate + Nitrite, **+0.526** for
+TSS and **+0.459** for Turbidity, and producing the clearest sign flip in the data (Specific
+Conductance ← discharge, +0.150 between but **−0.364 within** — dilution, visible only once you stop
+comparing different rivers). A permutation ranking pooled across stations cannot see that, because
+the between-station structure it competes with is far larger. Under the §3.3 formulations that model
+the station level explicitly, discharge is the feature that should move up.
+
+**`snow`, `snowd` and `wind` contribute nothing** — 0.000, 0.001 and 0.004 mean single-column drop,
+at or below the noise floor, with no target above 0.011. This run is on the **post-fix**
+`epa-full.csv` (`isu_snow_in` 81.9% null / 553 genuine nonzero readings, `isu_snowd_in` 87.2% null /
+444), so unlike the §4.1 rows it is not measuring the cleaner's fabricated zeros — it settles the
+"re-measure" flag those two rows carry.
+
+State the conclusion narrowly, though. The pipeline imputes with the training median, which for both
+snow columns is 0, so four rows in five reach the estimator as a constant; a permutation cannot move
+a constant. What this measures is that **the snow columns as currently fed to the model carry no
+signal** — which is exactly the drop decision — not that snowmelt is irrelevant to Iowa water
+quality. A snow feature built to be dense (a basin-level or accumulated-depth version, per §4.3)
+would have to be re-measured on its own terms.
 
 ---
 
@@ -365,11 +467,12 @@ training notebooks must move together and all **36 `.pkl` files must be retraine
 | Column | Reason | Confidence |
 |---|---|---|
 | `pct_row_crops` | Exact sum of `pct_corn + pct_soybean`; sole source of the rank deficiency; carries literally zero information | **certain** |
-| `isu_snowd_in` | 99.0% zero; only 15 distinct values; MI-implied r_equiv ≈ 0.05; unbinnable against **all 12** targets — **but see the note below** | ~~certain~~ **re-measure** |
-| `isu_snow_in` | 98.8% zero; 32 distinct values; same profile — **but see the note below** | ~~certain~~ **re-measure** |
+| `isu_snowd_in` | 99.0% zero; only 15 distinct values; MI-implied r_equiv ≈ 0.05; unbinnable against **all 12** targets. **Re-measured post-fix in §1.12**: 0.001 mean permutation drop, no target above 0.002 | **certain** |
+| `isu_snow_in` | 98.8% zero; 32 distinct values; same profile. **Re-measured post-fix in §1.12**: 0.000 mean permutation drop, no target above 0.0003 | **certain** |
 | 2 of the 4 `npfert__*` / `npmanure__*` columns | VIF 61.3 / 57.1 / 55.8 / 54.6; N↔P correlate at 0.977 and 0.987; four columns spanning ~two dimensions. Keep one N and one P, or replace all four with their first two PCs | high |
 | `prism_tdmean_c`, `isu_max_feel_c`, `isu_min_feel_c` | The six-member thermal cluster is statistically one variable; keep `prism_tmax_c` + `prism_tmin_c` (or a single mean) and drop the rest | high |
-| `isu_avg_rh` | 83% of its target pairs are flat or irregular; mean \|ρ\| = 0.075, max 0.167 | medium |
+| `isu_avg_rh` | 83% of its target pairs are flat or irregular; mean \|ρ\| = 0.075, max 0.167. **But** it is half the `precip + humidity` block that is E. coli's top predictor (§1.12) — check that target before dropping | medium |
+| `isu_avg_wind_speed_kts` | 0.004 mean permutation drop, max 0.011 — at the noise floor on every target (§1.12); mean \|ρ\| = 0.099 | medium |
 | `prism_ppt_mm` | 64.2% zero at the daily grain; unbinnable against all 12 targets. **Replace rather than drop** — see §4.3 | medium |
 | `LatitudeMeasure`, `LongitudeMeasure` | ~1 unique value per station: these *are* station identifiers, and they are the mechanism behind flags 1–2. **Decision, not a defect:** drop them if the goal is generalisation to unseen stations; keep them (and say so) if the goal is per-station prediction | conditional |
 
@@ -385,9 +488,10 @@ pair), `outputs/mv_vif.csv` and `outputs/feature_variance_decomposition.csv`.
 > 81.9% null / 17.0% genuine zero and `isu_snowd_in` is 87.2% null / 11.9% zero, with all 553 and
 > 444 nonzero readings intact.
 >
-> The drop recommendation may well still hold — only eight stations carry real snow data at all, so
-> the column is sparse regardless — but it now rests on **honest sparsity** rather than on a zero
-> fraction the pipeline invented. Re-run the univariate and bivariate notebooks before acting on it.
+> The drop recommendation **now rests on honest sparsity**, and §1.12 re-measured it there: on the
+> post-fix file both columns move the trained models by 0.001 R² or less on every target. Only eight
+> stations carry real snow data at all. Drop them as features; if snowmelt is wanted as a mechanism,
+> it needs a denser construction (§4.3), not these two columns.
 
 ### 4.2 Columns to drop from the table
 
@@ -506,10 +610,12 @@ would answer it in an afternoon, and it is the prerequisite for every other numb
 
 ## Appendix: supporting tables
 
-All in `src/04_eda/outputs/` (gitignored — regenerate by running the notebooks).
+All in `src/04_eda/outputs/` (gitignored — regenerate by running the notebooks, and
+`python3 src/04_eda/block_permutation_importance.py` for the `pi_` table).
 
 | Prefix | Notebook | Notable files |
 |---|---|---|
 | *(none)* | univariate | `column_completeness.csv`, `target_univariate_stats.csv`, `target_value_pileups.csv`, `feature_variance_decomposition.csv`, `split_leakage_check.csv` |
 | `bv_` | bivariate | `bv_pair_profiles.csv`, `bv_pair_reliability.csv`, `bv_persistence_baseline.csv`, `bv_spatial_autocorrelation.csv`, `bv_temporal_autocorrelation.csv`, `bv_missingness_vs_target.csv` |
 | `mv_` | multivariate | `mv_vif.csv`, `mv_null_space.csv`, `mv_between_within_station.csv`, `mv_correlation_vs_model_r2.csv`, `mv_mutual_information.csv`, `mv_target_overlap.csv` |
+| `pi_` | *(none — `block_permutation_importance.py`)* | `pi_permutation_importance.csv` (1,066 rows: 2 families × 13 targets × 29 single features + 12 blocks) |
