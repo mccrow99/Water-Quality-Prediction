@@ -1,14 +1,15 @@
 # Water Quality Prediction
 
-An end-to-end machine learning project for forecasting water quality conditions at Iowa EPA monitoring stations. It combines water quality measurements, climate records, streamflow, soil, and agricultural data into a single 315-column modeling table, then serves predictions for **thirteen** targets through an interactive Dash dashboard with map-based spatial interpolation.
+An end-to-end machine learning project for estimating water quality conditions at Iowa EPA monitoring stations. It combines water quality measurements, climate records, streamflow, soil, and agricultural data into a single 315-column modeling table, then serves predictions for **thirteen** targets through an interactive Dash dashboard with a station map.
 
-This repository is maintained as a completed project snapshot, with pre-trained artifacts and processed datasets included for reproducibility. It is organized so the project can be reviewed or run without rebuilding the full pipeline first.
+This repository is a **research prototype**. The data pipeline, exploratory analysis and model evaluation are complete, and the trained models and station table are committed so the dashboard runs from a fresh clone. The rest of `data/` (~8 GB, including the 81 MB modeling table) is **not** in git, so re-running any notebook needs a copy of it — see [`NEXT_STEPS.md`](NEXT_STEPS.md#step-0--get-set-up). **The dashboard is not yet ready to inform real decisions**: its maps are less accurate than the reported test scores suggest, for reasons measured below. Read [Current Status and Limitations](#current-status-and-limitations) before using any prediction, and [`NEXT_STEPS.md`](NEXT_STEPS.md) before continuing the work.
 
 ---
 
 ## Table of Contents
 
 - [Project Overview](#project-overview)
+- [Current Status and Limitations](#current-status-and-limitations)
 - [Data Sources](#data-sources)
 - [Repository Structure](#repository-structure)
 - [Setup and Installation](#setup-and-installation)
@@ -22,12 +23,13 @@ This repository is maintained as a completed project snapshot, with pre-trained 
 - [Testing](#testing)
 - [Deployment](#deployment)
 - [Tech Stack](#tech-stack)
+- [Next Steps](#next-steps)
 
 ---
 
 ## Project Overview
 
-This project enables predictive water quality modeling and analysis across Iowa using a comprehensive, multi-source dataset. The core application answers: **given the location of an EPA monitoring station and a date, what water quality should we expect there?**
+This project enables predictive water quality modeling and analysis across Iowa using a comprehensive, multi-source dataset. The core application is built to answer: **given the location of an EPA monitoring station and a date, what water quality should we expect there?** It does not yet answer that reliably — see [Current Status and Limitations](#current-status-and-limitations).
 
 The repository integrates data spanning water quality, climate, streamflow, soil, land use, agriculture, and regulatory sources into one modeling table (`data/final/epa-full.csv`, 48,251 rows × 315 columns before EDA, 318 after). See [`DATA.md`](DATA.md) for the full data dictionary and [`MERGE.md`](MERGE.md) for exactly how each source is joined.
 
@@ -49,9 +51,67 @@ Four scikit-learn model families (Linear Regression, Random Forest, Gradient Boo
 | E. coli | MPN/100mL |
 | WQI (composite Water Quality Index) | index, 0 = best, 100 = worst |
 
-Predictions are delivered through a locally runnable Dash app. The user selects a target, a model family, and a date; the app runs inference across every monitoring station that has the necessary predictors and renders a spatially interpolated map of predicted values across Iowa, along with per-station hover detail and held-out performance context.
+Predictions are delivered through a locally runnable Dash app. The user selects a target, a model family, and a date; the app runs inference at all 1,345 monitoring stations and colours each station on a map of Iowa (an interpolated surface between stations is available but off by default), along with per-station hover detail and held-out performance context.
 
 Pre-trained model files (52 total — 13 targets × 4 families) are included in the repository so the dashboard works immediately without retraining.
+
+---
+
+## Current Status and Limitations
+
+### At a glance
+
+| Component | State | Useful today for | Not useful for |
+|---|---|---|---|
+| **Data pipeline** (`src/01`–`03`) | Complete; grain, units and plausibility verified | A clean, documented station-day modeling table for Iowa, 2015-01-02 → 2025-12-25 | — |
+| **EDA** (`src/04_eda/`) | Thorough, but model-diagnostic | Data scientists judging whether and how this table can be modeled | Anyone asking about Iowa's water itself — where, when and how badly standards are exceeded, or whether conditions are improving. Parts of `eda-summary.md` also predate fixes it recommended (see below) |
+| **Model evaluation** (`src/05_modeling/`) | Rigorous | Knowing how well each target can be predicted at a station the model never saw, against a no-feature persistence baseline | Knowing how accurate the dashboard's maps are — that was never measured, and it is worse |
+| **Dashboard** (`app.py`) | Working prototype | Demonstrating the pipeline; comparing model families in the table at the bottom of the page | Deciding anything about a real water body |
+
+The strongest part of the project is its evaluation discipline: whole stations are held out, every score sits beside a persistence baseline, the target transform is chosen by cross-validation rather than by hand, and the trade-off between model size and accuracy is documented. The water temperature model is genuinely good (R² 0.94) when it is given the weather recorded on the sample date.
+
+### Why the dashboard should not yet inform decisions
+
+Measured by calling the app's own prediction path (`app.py::_cached_station_predictions`) against `data/stations.csv` and `data/final/epa-full.csv`. How to reproduce these numbers is in [`NEXT_STEPS.md`](NEXT_STEPS.md#appendix-reproducing-the-readme-figures).
+
+**1. The test scores do not describe what the map shows.** Every model was scored using the weather actually recorded on each sample's date. The app instead gives each station the weather from its **last visit** (`app.py::build_feature_matrix`) and changes only the day-of-year and year features. The median station's last visit was **September 2022**, and **87%** of last visits fell in April–October, so the models are fed summer weather in every season. The effect on the project's best model, water temperature:
+
+| Statewide median, °C | Jan | Apr | Jul | Oct |
+|---|--:|--:|--:|--:|
+| Observed (all samples in that month) | 0.6 | 10.5 | 24.5 | 14.4 |
+| Dashboard prediction (Gradient Boosting, 2026) | 11.6 | 15.5 | 20.8 | 16.4 |
+
+The January map is about **11 °C too warm**, and the seasonal swing is flattened by more than half. Dissolved oxygen shows the same flattening (January: 12.2 mg/L observed, 9.8 predicted). This is red flag 4 in `src/04_eda/eda-summary.md`, and it is still open.
+
+**2. Future dates are not forecasts.** The training data ends in December 2025.
+- The **tree models** (Random Forest, Gradient Boosting) cannot extrapolate the year, so from 2026 onward the year has no effect — a July 2030 map is identical to a July 2025 map at every station.
+- **Linear Regression and the Neural Network** instead extend the year trend they fitted past the end of the data. Between July 2025 and July 2030 the neural network's median Nitrate + Nitrite prediction rises from 8.4 to 18.1 mg/L, and linear regression's median Turbidity falls 44% — trends nothing in the data supports.
+- The "In 6 months" and "In 1 year" shortcuts, and the "Recent trend" panel, therefore show a seasonal curve built on stale weather, not a trend or a forecast.
+
+**3. Most targets are drawn at stations of a type the model never saw.** Every target is predicted at all 1,345 stations, which include 190 wells (groundwater), 318 lakes and 158 wetlands. Station type is not a model input, so a model cannot tell a well from a stream. For example:
+
+| Target | Stations that ever measured it | Shown on the map at, among others |
+|---|--:|---|
+| Nitrate | 278 | 315 lakes and 158 wetlands that never measured nitrate |
+| E. coli | 434 | 186 wells and 158 wetlands that never measured E. coli |
+| Specific Conductance | 483 | 494 river/stream sites that never measured it (training was mostly lakes and wells) |
+
+The "unseen stations" test only held out stations that measured the target, so it says nothing about these.
+
+**4. Where real data exists, the map mostly repeats it — without showing it.** At stations with five or more samples, the dashboard's predictions rank-correlate **0.60–0.91** with that station's own historical median (partly because most of those stations were in training). For Specific Conductance, Total Dissolved Solids and Total Phosphorus, simply repeating the station's last reading beats every model. Yet the hover panel shows no observed value, last sample date or sample count, so the better answer already in the data is hidden.
+
+**5. Point predictions carry confident labels and no uncertainty.** Each station gets a label such as "Low" or "High Concern" from a single predicted value, but typical errors are as large as the thresholds those labels use: the best E. coli model's mean absolute error is about **1,490 MPN/100 mL** against a 235 MPN/100 mL recreational threshold, and the best nitrate model's is **2.5 mg/L** against bands at 1, 3 and 10. Nothing on screen says how often a label would be wrong. WQI is an index defined by this project; its bands are quartiles of the observed data, not a regulatory standard.
+
+Underlying all five: **the project has no named user or decision.** "What should we expect at this station on this date" is a question, not a decision. "Should this beach post an advisory this weekend?" or "Will nitrate at this river site exceed 10 mg/L next month?" are decisions, and each needs a different target, horizon, set of locations and success metric. Choosing one is step 1 of [`NEXT_STEPS.md`](NEXT_STEPS.md).
+
+### Documentation known to be out of date
+
+Kept for the record of how the project evolved, but not a description of the current state:
+
+- **`src/04_eda/eda-summary.md`** — the red-flags table (§2) has no status column, so the station-leaking split (flag 1) and the redundant `pct_row_crops` column (flag 5) still read as open "critical" issues; both are fixed. §3.1 quotes the pre-fix, leaky R² scores (Gradient Boosting mean 0.547); §4.1 refers to 36 `.pkl` files and three training notebooks (now 52 and four); §5 calls the grouped re-fit "the open question" — it has been done, and its results are in `model_outcomes.md`.
+- **`src/05_modeling/model_outcomes.md`** — says `app.py` loads only three model families (it loads all four); the WQI section's text quotes Random Forest R² 0.337 / margin +0.168 where its own table shows 0.288 / +0.121; the "Against the memorization baseline" table and several takeaways still use the pre-size-cap random forest scores (e.g. Specific Conductance 0.655, now 0.546).
+
+`src/05_modeling/model_metrics.csv` is current and is the source of truth for every score.
 
 ---
 
@@ -74,7 +134,7 @@ At a glance:
 - **Regulatory**: NPDES facility density and ATTAINS impairment context near each station
 - **Demographics**: County population from the Census Bureau
 
-**Geographic coverage**: Iowa statewide. **Temporal coverage**: water quality and climate records span multiple decades; the terminal modeling table (`epa-full.csv`) holds 48,251 station-day observation rows.
+**Geographic coverage**: Iowa statewide. **Temporal coverage**: the terminal modeling table (`epa-full.csv`) holds 48,251 station-day observation rows at 1,345 stations, from 2015-01-02 to 2025-12-25.
 
 ---
 
@@ -89,8 +149,9 @@ At a glance:
 ├── run-requirements.txt                    # Runtime-only subset, used by the deployed app
 ├── DATA.md                                 # Full data dictionary
 ├── MERGE.md                                # Merge plan: keys, stages, verified shapes
+├── NEXT_STEPS.md                           # Prioritised plan for continuing the project
 │
-├── data/
+├── data/                                   # gitignored except stations.csv (~8 GB locally)
 │   ├── tabular/
 │   │   ├── 01_raw/<domain>/                # Raw downloaded inputs, by domain
 │   │   └── 02_clean/<domain>/               # Cleaned outputs, by domain
@@ -116,8 +177,10 @@ At a glance:
     │   ├── bivariate-analysis.ipynb
     │   ├── multivariate-analysis.ipynb
     │   ├── wqi-calculation.ipynb            # Appends WQI, WQI_n_groups, WQI_weight_coverage
-    │   ├── eda-summary.md                   # Consolidated EDA findings
-    │   └── outputs/                        # ~35 CSV/PNG diagnostic artifacts
+    │   ├── block_permutation_importance.py  # Which predictor blocks the trained models rely on
+    │   ├── eda-summary.md                   # Consolidated EDA findings (partly out of date — see Current Status)
+    │   ├── plots/                           # Key EDA figures (PNG), gitignored — regenerate from the notebooks
+    │   └── outputs/                        # CSV/PNG diagnostic tables, gitignored — regenerate from the notebooks
     └── 05_modeling/
         ├── linear_regression/
         │   ├── multiple_linear_regression.ipynb
@@ -192,19 +255,28 @@ The app loads all 52 pre-trained `.pkl` models from `src/05_modeling/<family>/` 
 
 ## Dashboard Features
 
-The dashboard is organized into a left control panel and a right map panel.
+> Read [Current Status and Limitations](#current-status-and-limitations) first: the features below work as described, but the values they display are not yet reliable enough to act on.
 
-**Left Panel — Controls:**
-- **Target Variable** — choose one of thirteen water quality parameters (twelve measured parameters plus the composite WQI)
-- **Prediction Model** — switch between Linear Regression, Random Forest, and Gradient Boosting
-- **Prediction Date** — pick any date, or use the quick-select buttons (Today, In 1 week, In 2 weeks, In 1 month, In 6 months, In 1 year)
-- **Run Prediction** — runs inference across every monitoring station and a held-out performance summary for the selected target/model
+The dashboard has a left control column, a centre map, a right information rail, and a model comparison table beneath them.
 
-**Right Panel — Map:**
-- Displays Iowa EPA monitoring stations on a scoped U.S. map
-- After running a prediction, shows a color-coded interpolated surface (`scipy.griddata`, cubic with linear fallback) across the station network, anchored to the 2nd–98th percentile of station predictions to avoid spline overshoot distorting the display
-- Station markers overlay the interpolated grid with per-station predicted values on hover, reverse-geocoded to the nearest major Iowa city
-- Summary panel shows Min, Max, Mean, and Std Dev for the current prediction, plus the model's held-out R², error rate, and its margin over a same-station persistence baseline
+**Left — Controls:**
+- **What to measure** — one of thirteen water quality parameters (twelve measured parameters plus the composite WQI)
+- **Which model** — Linear Regression, Random Forest, Gradient Boosting or Neural Network (defaults to Gradient Boosting)
+- **When** — any date from 2000 to 2030, or a quick-select button (Today, In 1 week, In 2 weeks, In 1 month, In 6 months, In 1 year). Only the day-of-year and year features change with the date; every other predictor is carried forward from the station's last visit
+- **Run prediction** — runs inference at all 1,345 monitoring stations
+- **Map display** — toggles for the interpolated surface (**off** by default) and for city, river and lake labels (on by default)
+
+**Centre — Map:**
+- Each station is coloured by its predicted value, on a scale anchored to the 2nd–98th percentile of station predictions
+- With the interpolated surface on, a cubic spline (`scipy.griddata`, linear fallback) fills the gaps between stations. It is drawn between the model's outputs, not predicted, and is least trustworthy where stations are sparse
+
+**Right — Information rail:**
+- **Point detail** — the hovered station's predicted value, a qualitative label ("Low", "High Concern", …), provider, matched climate station and the nearest major city
+- **Recent trend** — a calendar heatmap of the statewide average prediction for the 14 weeks up to the chosen date. Because weather is held fixed, this is a seasonal curve rather than an observed trend
+- **Statewide spread** — low, median, high and average of the station predictions
+- **Model accuracy** — the selected model's held-out R² (log-scale R² for log-fitted models), RMSE, MAE, error rate, and its margin over the repeat-last-value persistence baseline
+
+**Below — Compare every model:** held-out scores for all 13 targets × 4 families from `model_metrics.csv`. Clicking a row loads that target and model into the controls.
 
 **Color scales by target** (`app.py::TARGET_COLORSCALES`): e.g. Water Temperature — RdYlBu (reversed); pH — RdYlGn; Dissolved Oxygen — Blues; the nitrogen/turbidity/solids family — Yellow-Orange-Red/Brown ramps; WQI — RdYlGn reversed (green = good/low, red = bad/high, since WQI runs 0=best to 100=worst).
 
@@ -212,7 +284,7 @@ The dashboard is organized into a left control panel and a right map panel.
 
 ## Data Pipeline
 
-The project is a linear, five-stage pipeline. Pre-processed artifacts are committed at every stage so the app and notebooks work without re-running anything upstream.
+The project is a linear, five-stage pipeline. Its intermediate outputs under `data/` are gitignored; only the final station table (`data/stations.csv`) and the trained models are committed, which is enough to run the app but not the notebooks.
 
 ```
 src/01_download/   → data/tabular/01_raw/         API/portal download notebooks
@@ -222,9 +294,10 @@ src/03_merge/      → data/03a_merge_primary/      P1–P7: per-source merges o
                      data/03b_merge_secondary/    S1–S2: station-day + station-year context
                      data/final/     T1: epa-full.csv, the terminal modeling table
 src/04_eda/        → epa-full.csv (in place)      3 read-only EDA notebooks + WQI calculation
-src/05_modeling/   → src/05_modeling/<family>/*.pkl   3 training notebooks, 13 targets each
+src/05_modeling/   → src/05_modeling/<family>/*.pkl   4 training notebooks, 13 targets each
                      model_metrics.csv
-app.py             ← epa-full.csv + <family>/*.pkl + model_metrics.csv
+build_station_table.py → data/stations.csv        one row per station, collapsed from epa-full.csv
+app.py             ← data/stations.csv + <family>/*.pkl + model_metrics.csv
 ```
 
 Full per-stage detail — every notebook, its output file, keys, and verified row/column counts — is in [`MERGE.md`](MERGE.md). Stage-1/2 source detail is in [`DATA.md`](DATA.md).
@@ -280,6 +353,8 @@ Each model's R² is also reported alongside a same-station **persistence baselin
 ---
 
 ## Model Performance
+
+> **These are not the dashboard's accuracy.** Each score below was measured on held-out stations using the weather actually recorded on each sample's date. The dashboard supplies weather from each station's last visit instead, so its maps are less accurate — for water temperature, about 11 °C too warm in January. See [Current Status and Limitations](#current-status-and-limitations).
 
 Held-out test-set R² by target and model family (raw scale; **bold** = the model was fitted on `log10` and R² is shown on the log scale, where it is the meaningful number). Full metrics — RMSE, MAE, error rate, persistence baselines, station/row counts — are in [`src/05_modeling/model_metrics.csv`](src/05_modeling/model_metrics.csv) and summarized in [`src/05_modeling/model_outcomes.md`](src/05_modeling/model_outcomes.md).
 
@@ -421,6 +496,15 @@ Pipeline and notebooks only (in `requirements.txt`, not installed on the host):
 
 ---
 
-## Status
+## Next Steps
 
-The full pipeline — download through modeling — is built and reproducible from committed artifacts. All 52 models (13 targets × 4 families) are trained and stored in the repository, and the dashboard launches locally with a single command for interactive prediction and visualization across Iowa's water monitoring network. See `CLAUDE.md` for the detailed technical contract between the app and the models (feature order, target transforms, metrics schema) if you're modifying the pipeline.
+The pipeline is built through modeling, all 52 models are trained and committed, and the dashboard launches locally with a single command. What remains is turning a well-evaluated prototype into something a person could make a decision with. [`NEXT_STEPS.md`](NEXT_STEPS.md) lays out the course of action in order:
+
+0. **Get set up** — obtain the gitignored `data/` files and fix the out-of-date documentation
+1. **Choose one user and one decision** — this determines the target, locations, time horizon and success metric
+2. **Measure the dashboard's real accuracy** — backtest the app's own feature-building code on held-out observations
+3. **Feed the models weather for the chosen date** — and stop implying that future dates are forecasts
+4. **Only show predictions the model can support** — separate groundwater from surface water; hide unmeasured station types
+5. **Show observed data beside predictions** — last value, date and sample count
+6. **Replace labels with probabilities and ranges** — e.g. "chance above 235 MPN/100 mL"
+7. **Then improve the models** — previous-observation features, a two-part model for the zero-heavy nitrogen targets, fewer redundant predictors
