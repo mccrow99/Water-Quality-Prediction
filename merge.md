@@ -18,14 +18,14 @@ shapes:
 | P7 | `P7_census-population-merge.ipynb` | `data/03a_merge_primary/census-population.csv` | 17,877 | 6 |
 | S1 | `S1_wq-geo-soil-daily-merge.ipynb` | `data/03b_merge_secondary/wq-geo-soil-daily.csv` | 48,251 | 102 |
 | S2 | `S2_station-year-context-merge.ipynb` | `data/03b_merge_secondary/station-year-context.csv` | 18,326 | 217 |
-| T1 | `T1_epa-full-merge.ipynb` | `data/03c_merge_tertiary/epa-full.csv` | 48,251 | 315 (318 after `src/04_eda/wqi-calculation.ipynb` appends 3 `WQI*` columns) |
+| T1 | `T1_epa-full-merge.ipynb` | `data/final/epa-full.csv` | 48,251 | 315 (318 after `src/04_eda/wqi-calculation.ipynb` appends 3 `WQI*` columns) |
 
 ## Contents
 
 - [1. Datasets & foreign keys](#1-datasets--foreign-keys)
 - [2. Primary merges — `03a_merge_primary`](#2-primary-merges--03a_merge_primary)
 - [3. Secondary merges — `03b_merge_secondary`](#3-secondary-merges--03b_merge_secondary)
-- [4. Tertiary merges — `03c_merge_tertiary`](#4-tertiary-merges--03c_merge_tertiary)
+- [4. Tertiary merges — `final`](#4-tertiary-merges--final)
 - [5. Full dependency graph](#5-full-dependency-graph)
 - [6. Known gaps, deferred datasets, caveats](#6-known-gaps-deferred-datasets-caveats)
 
@@ -83,7 +83,7 @@ Preliminary merges: both (or all) inputs come straight from `02_clean` /
 
 Outputs are written to `data/03a_merge_primary/` (at the `data/` root, **not**
 under `data/tabular/`); secondary/tertiary tiers write to
-`data/03b_merge_secondary/` and `data/03c_merge_tertiary/`. Output filenames
+`data/03b_merge_secondary/` and `data/final/`. Output filenames
 carry **no `-clean`/`-merged` suffix** — the bare stage name plus `.csv`.
 
 | # | Output | Inputs (all `02_clean`) | Join | Grain |
@@ -139,7 +139,7 @@ Both inputs are `03a` outputs, or one `03a` output + one `02_clean` table.
 
 ---
 
-## 4. Tertiary merges — `03c_merge_tertiary`
+## 4. Tertiary merges — `final`
 
 Uses `03b` outputs (subsequent to secondary).
 
@@ -190,7 +190,7 @@ Secondary — data/03b_merge_secondary/
   S1  wq-geo-soil-daily.csv       ◀── P1 + P2
   S2  station-year-context.csv    ◀── P2 + P5 + P6 + P3[crop/livestock] + P3b[N&P] + P4
 
-Tertiary — data/03c_merge_tertiary/
+Tertiary — data/final/
   T1  epa-full.csv                ◀── S1 + S2   [the single final modeling table]
 ```
 
